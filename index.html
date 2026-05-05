@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BDO-GrindTracker</title>
+<script src="vendor/tailwind.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bg:        '#0b0b0d',
+          panel:     '#15161a',
+          panel2:    '#1b1d22',
+          border:    '#26282e',
+          mute:      '#9aa0a6',
+          mute2:     '#6b7076',
+          accent:    '#3b82f6',
+          accent2:   '#22c55e',
+          gold:      '#d4a017',
+        }
+      }
+    }
+  }
+</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-bg text-white min-h-screen font-sans antialiased">
+
+<main class="max-w-[1600px] mx-auto px-6 py-6">
+
+  <!-- Top header row -->
+  <div class="flex items-start justify-between gap-4 mb-6">
+    <div>
+      <h1 class="text-3xl font-bold tracking-tight">BDO-GrindTracker</h1>
+      <p class="text-mute text-sm mt-1">Track Black Desert Online grind performance across spots and classes</p>
+    </div>
+
+    <!-- Center segmented tabs -->
+    <div class="flex-1 flex justify-center">
+      <div class="bg-panel border border-border rounded-lg p-1 flex gap-1" id="viewTabs">
+        <button data-view="spot"     class="view-tab px-5 py-1.5 rounded-md text-sm font-medium bg-accent text-white">Spot</button>
+        <button data-view="class"    class="view-tab px-5 py-1.5 rounded-md text-sm font-medium text-mute hover:text-white">Class</button>
+        <button data-view="settings" class="view-tab px-5 py-1.5 rounded-md text-sm font-medium text-mute hover:text-white">Settings</button>
+      </div>
+    </div>
+
+    <!-- Right action buttons -->
+    <div class="flex items-center gap-2">
+      <button id="filterBtn" class="w-10 h-10 bg-panel border border-border rounded-lg flex items-center justify-center hover:bg-panel2" title="Filter">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5h18l-7 9v5l-4 2v-7L3 5z"/></svg>
+      </button>
+      <button id="addBtn" class="h-10 px-4 bg-accent2 hover:brightness-110 rounded-lg font-medium text-sm flex items-center gap-2">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        Add
+      </button>
+    </div>
+  </div>
+
+  <!-- Date range pills (shared between Spot + Class views) -->
+  <div id="rangeTabsWrap" class="flex gap-2 mb-6">
+    <button data-range="all" class="range-tab px-4 py-1.5 rounded-md text-sm font-medium bg-accent text-white">All</button>
+    <button data-range="7"   class="range-tab px-4 py-1.5 rounded-md text-sm font-medium bg-panel border border-border text-mute hover:text-white">Past 7 Days</button>
+    <button data-range="30"  class="range-tab px-4 py-1.5 rounded-md text-sm font-medium bg-panel border border-border text-mute hover:text-white">Past 30 Days</button>
+    <button data-range="90"  class="range-tab px-4 py-1.5 rounded-md text-sm font-medium bg-panel border border-border text-mute hover:text-white">Past 90 Days</button>
+  </div>
+
+  <!-- =================== SPOT VIEW =================== -->
+  <section data-pane="spot">
+
+  <!-- KPI cards -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+    <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+      <div>
+        <div class="text-sm text-mute">Total Silver Earned</div>
+        <div class="mt-3 text-3xl font-semibold" id="kpiTotalSilver">—</div>
+      </div>
+      <div class="w-10 h-10 rounded-lg bg-gold/15 text-gold flex items-center justify-center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><ellipse cx="12" cy="6"  rx="8" ry="3"/><path d="M4 6v4c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 10v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/><path d="M4 14v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/></svg>
+      </div>
+    </div>
+
+    <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+      <div>
+        <div class="text-sm text-mute">Average Silver an Hour</div>
+        <div class="mt-3 text-3xl font-semibold" id="kpiAvgSilver">—</div>
+      </div>
+      <div class="w-10 h-10 rounded-lg bg-accent/15 text-accent flex items-center justify-center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-3"/></svg>
+      </div>
+    </div>
+
+    <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+      <div>
+        <div class="text-sm text-mute">Total Hours Grinded</div>
+        <div class="mt-3 text-3xl font-semibold" id="kpiTotalHours">—</div>
+      </div>
+      <div class="w-10 h-10 rounded-lg bg-panel2 text-mute flex items-center justify-center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts grid -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <!-- Total Hours (donut) -->
+    <div class="bg-panel border border-border rounded-xl p-5 min-h-[330px]">
+      <div class="flex items-center gap-2 mb-3">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-mute"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <h2 class="text-base font-semibold">Total Hours</h2>
+      </div>
+      <div class="h-[270px] relative" id="spotDonutWrap">
+        <div class="empty-state h-full flex items-center justify-center">
+          <div class="w-[140px] h-[140px] rounded-full border-[26px] border-[#3a3d44]"></div>
+        </div>
+        <canvas data-chart="spotDonut" class="hidden"></canvas>
+      </div>
+    </div>
+
+    <!-- Total Silver (bar) -->
+    <div class="bg-panel border border-border rounded-xl p-5 min-h-[330px]">
+      <div class="flex items-center gap-2 mb-3">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-gold"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v4c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 10v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/><path d="M4 14v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/></svg>
+        <h2 class="text-base font-semibold">Total Silver</h2>
+      </div>
+      <div class="h-[270px] relative" id="spotSilverWrap">
+        <div class="empty-state h-full flex items-center justify-center text-mute2 text-sm">No data in this range</div>
+        <canvas data-chart="spotSilver" class="hidden"></canvas>
+      </div>
+    </div>
+
+    <!-- Silver an Hour (bar) -->
+    <div class="bg-panel border border-border rounded-xl p-5 min-h-[330px]">
+      <div class="flex items-center gap-2 mb-3">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-3"/></svg>
+        <h2 class="text-base font-semibold">Silver an Hour</h2>
+      </div>
+      <div class="h-[270px] relative" id="spotRateWrap">
+        <div class="empty-state h-full flex items-center justify-center text-mute2 text-sm">No data in this range</div>
+        <canvas data-chart="spotRate" class="hidden"></canvas>
+      </div>
+    </div>
+
+    <!-- Recent Sessions -->
+    <div class="bg-panel border border-border rounded-xl p-5 min-h-[330px]">
+      <div class="flex items-center gap-2 mb-3">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-mute"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        <h2 class="text-base font-semibold">Recent Sessions</h2>
+      </div>
+      <div id="recentWrap" class="h-[270px] flex flex-col items-center justify-center text-mute2">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="mb-3 opacity-60"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        <div class="text-sm">No sessions recorded yet</div>
+      </div>
+    </div>
+  </div>
+
+  </section>
+
+  <!-- =================== CLASS VIEW =================== -->
+  <section data-pane="class" class="hidden">
+
+    <!-- KPI row 1 (mirrors Spot) -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+      <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+        <div>
+          <div class="text-sm text-mute">Total Silver Earned</div>
+          <div class="mt-3 text-3xl font-semibold" id="kpiClsTotalSilver">—</div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-gold/15 text-gold flex items-center justify-center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v4c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 10v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/><path d="M4 14v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/></svg>
+        </div>
+      </div>
+      <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+        <div>
+          <div class="text-sm text-mute">Average Silver an Hour</div>
+          <div class="mt-3 text-3xl font-semibold" id="kpiClsAvgSilver">—</div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-accent/15 text-accent flex items-center justify-center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-3"/></svg>
+        </div>
+      </div>
+      <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+        <div>
+          <div class="text-sm text-mute">Total Hours Grinded</div>
+          <div class="mt-3 text-3xl font-semibold" id="kpiClsTotalHours">—</div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-panel2 text-mute flex items-center justify-center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- KPI row 2 (class-specific) -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+      <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+        <div>
+          <div class="text-sm text-mute">Best Class</div>
+          <div class="mt-3 text-3xl font-semibold" id="kpiBestClass">—</div>
+          <div class="text-xs text-mute2 mt-1" id="kpiBestClassName"></div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-accent2/15 text-accent2 flex items-center justify-center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h14v3a5 5 0 0 1-5 5h-1l1 4h2v2H8v-2h2l1-4h-1A5 5 0 0 1 5 7V4zm2 2v1a3 3 0 0 0 3 3V6H7zm10 0h-3v4a3 3 0 0 0 3-3V6z"/></svg>
+        </div>
+      </div>
+      <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+        <div>
+          <div class="text-sm text-mute">Most Played Class</div>
+          <div class="mt-3 text-3xl font-semibold" id="kpiMostPlayed">—</div>
+          <div class="text-xs text-mute2 mt-1" id="kpiMostPlayedName"></div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-gold/15 text-gold flex items-center justify-center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="12,2 15,9 22,9 16.5,13.5 18.5,21 12,16.5 5.5,21 7.5,13.5 2,9 9,9"/></svg>
+        </div>
+      </div>
+      <div class="bg-panel border border-border rounded-xl p-5 flex items-start justify-between">
+        <div>
+          <div class="text-sm text-mute">Classes Used</div>
+          <div class="mt-3 text-3xl font-semibold" id="kpiClassesUsed">—</div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-panel2 text-mute flex items-center justify-center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="bg-panel border border-border rounded-xl p-5 min-h-[330px]">
+        <div class="flex items-center gap-2 mb-3">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-mute"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <h2 class="text-base font-semibold">Total Hours</h2>
+        </div>
+        <div class="h-[270px] relative" id="classDonutWrap">
+          <div class="empty-state h-full flex items-center justify-center">
+            <div class="w-[140px] h-[140px] rounded-full border-[26px] border-[#3a3d44]"></div>
+          </div>
+          <canvas data-chart="classDonut" class="hidden"></canvas>
+        </div>
+      </div>
+
+      <div class="bg-panel border border-border rounded-xl p-5 min-h-[330px]">
+        <div class="flex items-center gap-2 mb-3">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-gold"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v4c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 10v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/><path d="M4 14v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/></svg>
+          <h2 class="text-base font-semibold">Total Silver</h2>
+        </div>
+        <div class="h-[270px] relative" id="classSilverWrap">
+          <div class="empty-state h-full flex items-center justify-center text-mute2 text-sm">No class data in this range</div>
+          <canvas data-chart="classSilver" class="hidden"></canvas>
+        </div>
+      </div>
+
+      <div class="bg-panel border border-border rounded-xl p-5 min-h-[330px] lg:col-span-2">
+        <div class="flex items-center gap-2 mb-3">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-3"/></svg>
+          <h2 class="text-base font-semibold">Silver an Hour</h2>
+        </div>
+        <div class="h-[270px] relative" id="classRateWrap">
+          <div class="empty-state h-full flex items-center justify-center text-mute2 text-sm">No class data in this range</div>
+          <canvas data-chart="classRate" class="hidden"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =================== SETTINGS VIEW =================== -->
+  <section data-pane="settings" class="hidden space-y-4">
+
+    <!-- Items -->
+    <div class="bg-panel border border-border rounded-xl p-6">
+      <div class="flex items-center justify-between mb-5">
+        <div>
+          <h2 class="text-lg font-semibold">Items</h2>
+          <p class="text-sm text-mute mt-0.5">Shared loot library — link the same item to multiple spots</p>
+        </div>
+        <button id="addItemBtn" class="h-9 px-3 bg-accent2 hover:brightness-110 rounded-lg font-medium text-sm flex items-center gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add Item
+        </button>
+      </div>
+
+      <div id="itemEditor" class="hidden bg-panel2 border border-border rounded-lg p-4 mb-4">
+        <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto_auto_auto_auto] gap-3 items-end">
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Item name</div>
+            <input id="itemName" type="text" placeholder="e.g. Deboreka Earring" class="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent">
+          </label>
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Image <span class="text-mute2">(URL, drop, or paste)</span></div>
+            <input id="itemImage" type="text" placeholder="https://...  or drop/paste image" class="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent transition-shadow">
+          </label>
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Price</div>
+            <input id="itemPrice" type="number" min="0" step="1" value="0" class="w-32 bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent">
+          </label>
+          <label class="flex items-center gap-1.5 text-sm text-mute pb-2.5">
+            <input id="itemTax" type="checkbox" checked class="accent-accent">
+            Taxable
+          </label>
+          <button id="itemSaveBtn" class="h-9 px-4 bg-accent hover:brightness-110 rounded-md text-sm font-medium">Save</button>
+          <button id="itemCancelBtn" class="h-9 px-4 bg-panel border border-border hover:text-white text-mute rounded-md text-sm">Cancel</button>
+        </div>
+      </div>
+
+      <div id="itemList" class="border border-border rounded-lg overflow-hidden"></div>
+      <div id="itemListEmpty" class="text-center py-10 text-mute2 hidden">
+        <div class="text-sm">No items yet</div>
+        <div class="text-xs mt-1">Add items here, then link them to spots below</div>
+      </div>
+    </div>
+
+    <!-- Spots -->
+    <div class="bg-panel border border-border rounded-xl p-6">
+      <div class="flex items-center justify-between mb-5">
+        <div>
+          <h2 class="text-lg font-semibold">Spots</h2>
+          <p class="text-sm text-mute mt-0.5">Click a spot to link items from your library</p>
+        </div>
+        <button id="addSpotBtn" class="h-9 px-3 bg-accent2 hover:brightness-110 rounded-lg font-medium text-sm flex items-center gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add Spot
+        </button>
+      </div>
+
+      <!-- Inline spot editor -->
+      <div id="spotEditor" class="hidden bg-panel2 border border-border rounded-lg p-4 mb-4">
+        <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto_auto] gap-3 items-end">
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Spot name</div>
+            <input id="spotName" type="text" placeholder="e.g. Aakman Temple" class="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent">
+          </label>
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Icon <span class="text-mute2">(URL, drop, or paste image)</span></div>
+            <input id="spotIcon" type="text" placeholder="https://...  or drop/paste image here" class="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent transition-shadow">
+          </label>
+          <button id="spotSaveBtn" class="h-9 px-4 bg-accent hover:brightness-110 rounded-md text-sm font-medium">Save</button>
+          <button id="spotCancelBtn" class="h-9 px-4 bg-panel border border-border hover:text-white text-mute rounded-md text-sm">Cancel</button>
+        </div>
+      </div>
+
+      <div id="spotList" class="border border-border rounded-lg overflow-hidden"></div>
+      <div id="spotListEmpty" class="text-center py-10 text-mute2 hidden">
+        <div class="text-sm">No spots added yet</div>
+        <div class="text-xs mt-1">Click "Add Spot" to create your first one</div>
+      </div>
+    </div>
+
+    <!-- Classes -->
+    <div class="bg-panel border border-border rounded-xl p-6">
+      <div class="flex items-center justify-between mb-5">
+        <div>
+          <h2 class="text-lg font-semibold">Classes</h2>
+          <p class="text-sm text-mute mt-0.5">Your characters / classes to attribute sessions to</p>
+        </div>
+        <button id="addClassBtn" class="h-9 px-3 bg-accent2 hover:brightness-110 rounded-lg font-medium text-sm flex items-center gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add Class
+        </button>
+      </div>
+
+      <div id="classEditor" class="hidden bg-panel2 border border-border rounded-lg p-4 mb-4">
+        <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto_auto] gap-3 items-end">
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Class name</div>
+            <input id="className" type="text" placeholder="e.g. Drakania" class="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent">
+          </label>
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Image <span class="text-mute2">(URL, drop, or paste image)</span></div>
+            <input id="classIcon" type="text" placeholder="https://...  or drop/paste image here" class="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent transition-shadow">
+          </label>
+          <button id="classSaveBtn" class="h-9 px-4 bg-accent hover:brightness-110 rounded-md text-sm font-medium">Save</button>
+          <button id="classCancelBtn" class="h-9 px-4 bg-panel border border-border hover:text-white text-mute rounded-md text-sm">Cancel</button>
+        </div>
+      </div>
+
+      <div id="classList" class="border border-border rounded-lg overflow-hidden"></div>
+      <div id="classListEmpty" class="text-center py-10 text-mute2 hidden">
+        <div class="text-sm">No classes added yet</div>
+        <div class="text-xs mt-1">Click "Add Class" to create your first one</div>
+      </div>
+    </div>
+
+    <!-- Data tools -->
+    <div id="dataCard" class="bg-panel border border-border rounded-xl p-6 transition-colors">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-mute uppercase tracking-wide">Data</h3>
+        <span class="text-xs text-mute2">Drop a <code>.json</code> file anywhere here to import</span>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button id="exportBtn" class="h-9 px-3 bg-panel2 border border-border hover:text-white text-sm rounded-md">Export JSON</button>
+        <button id="importBtn" class="h-9 px-3 bg-panel2 border border-border hover:text-white text-sm rounded-md">Import JSON</button>
+        <input id="importFile" type="file" accept="application/json" class="hidden">
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- =================== PICK SPOT MODAL =================== -->
+<div id="pickSpotModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+  <div class="bg-panel border border-border rounded-xl w-full max-w-md max-h-[80vh] flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border">
+      <div class="flex items-center gap-2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" class="text-accent2"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z"/></svg>
+        <h3 class="text-base font-semibold">Pick spot</h3>
+      </div>
+      <button class="modal-close text-mute hover:text-white" data-close="pickSpotModal">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="px-5 py-3 border-b border-border">
+      <input id="pickSpotSearch" type="text" placeholder="Search for spot" class="w-full bg-panel2 border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent placeholder:text-mute2">
+    </div>
+    <div id="pickSpotList" class="overflow-y-auto p-3 space-y-2 flex-1"></div>
+  </div>
+</div>
+
+<!-- =================== SESSION FORM MODAL =================== -->
+<div id="sessionModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto">
+  <div class="bg-panel border border-border rounded-xl w-full max-w-3xl my-8 shadow-2xl">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border">
+      <div class="flex items-center gap-3" id="sessionHeader">
+        <span id="sessionSpotAvatar"></span>
+        <div>
+          <h3 class="text-base font-semibold" id="sessionSpotName">—</h3>
+          <p class="text-xs text-mute">New session</p>
+        </div>
+      </div>
+      <button class="modal-close text-mute hover:text-white" data-close="sessionModal">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="p-5 space-y-5">
+
+      <!-- Time -->
+      <div class="bg-panel2 border border-border rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wide text-mute mb-3">Time</div>
+        <div class="flex gap-3 items-end">
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Hours</div>
+            <input id="sessHours" type="number" min="0" step="1" value="1" class="w-24 bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent">
+          </label>
+          <div class="text-xl text-mute pb-2">:</div>
+          <label class="block">
+            <div class="text-xs text-mute mb-1">Mins</div>
+            <input id="sessMins" type="number" min="0" max="59" step="1" value="0" class="w-24 bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent">
+          </label>
+          <label class="block ml-auto">
+            <div class="text-xs text-mute mb-1">Drop Rate %</div>
+            <input id="sessDropRate" type="number" step="0.1" value="100" class="w-28 bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent">
+          </label>
+          <label class="flex items-center gap-2 pb-2.5">
+            <input id="sessApplyTax" type="checkbox" checked class="accent-accent">
+            <span class="text-sm text-mute">Apply 15.5% tax</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- OCR scan -->
+      <div class="bg-panel2 border border-border rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-xs uppercase tracking-wide text-mute">Auto-scan from screenshot <span class="text-mute2 normal-case">(optional)</span></div>
+          <button id="sessOcrClear" class="hidden text-xs text-mute hover:text-white">Clear</button>
+        </div>
+
+        <label id="sessOcrDrop" class="block border-2 border-dashed border-border hover:border-accent rounded-md py-5 text-center text-mute2 cursor-pointer transition-colors">
+          <div class="text-sm">Drop / paste a screenshot, or click to choose</div>
+          <div class="text-xs mt-1">Detects quantities — you map each one to a loot item</div>
+          <input id="sessOcrFile" type="file" accept="image/*" class="hidden">
+        </label>
+
+        <div id="sessOcrLoading" class="hidden text-center py-4 text-mute2 text-sm">
+          <span id="sessOcrLoadingText">Loading scanner…</span>
+        </div>
+
+        <div id="sessOcrResults" class="hidden space-y-3 mt-3">
+          <div class="relative inline-block max-w-full select-none">
+            <img id="sessOcrPreview" class="block max-w-full max-h-[260px] rounded-md border border-border" alt="" draggable="false">
+            <canvas id="sessOcrOverlay" class="absolute inset-0 cursor-crosshair rounded-md"></canvas>
+          </div>
+          <div class="text-xs text-mute2">Drag a rectangle on the image to scan just that region. Yellow = unmapped, green = mapped.</div>
+
+          <div id="sessOcrTime" class="hidden bg-panel border border-accent/30 rounded-md px-3 py-2 flex items-center gap-3">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            <div class="flex-1 text-sm">Detected time: <span id="sessOcrTimeText" class="font-semibold">—</span></div>
+            <button id="sessOcrTimeApply" class="h-7 px-3 bg-accent hover:brightness-110 rounded-md text-xs font-medium">Fill Hours/Mins</button>
+          </div>
+
+          <div id="sessOcrSelToolbar" class="hidden flex items-center gap-2 bg-panel border border-border rounded-md px-3 py-2 text-xs">
+            <span>Selection ready —</span>
+            <button id="sessOcrScanSel" class="h-7 px-3 bg-accent hover:brightness-110 rounded-md font-medium text-white">Scan selection</button>
+            <button id="sessOcrClearSel" class="h-7 px-3 bg-panel2 border border-border hover:text-white rounded-md text-mute">Clear selection</button>
+          </div>
+
+          <div id="sessOcrList" class="space-y-1.5"></div>
+          <div class="flex items-center justify-between pt-1">
+            <div class="text-xs text-mute2" id="sessOcrSummary"></div>
+            <button id="sessOcrApply" class="h-8 px-4 bg-accent hover:brightness-110 rounded-md text-sm font-medium">Apply to session</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loot -->
+      <div class="bg-panel2 border border-border rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-xs uppercase tracking-wide text-mute">Loot</div>
+          <div class="text-xs text-mute2" id="sessItemHint">—</div>
+        </div>
+        <div id="sessLootGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2"></div>
+        <div id="sessLootEmpty" class="hidden text-center py-6 text-mute2 text-sm">
+          No items linked to this spot.<br>
+          <span class="text-xs">In Settings → click this spot → Manage Items.</span>
+        </div>
+      </div>
+
+      <!-- Class -->
+      <div class="bg-panel2 border border-border rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wide text-mute mb-3">Class</div>
+        <div id="sessClassList" class="flex flex-wrap gap-2"></div>
+        <div id="sessClassEmpty" class="hidden text-mute2 text-sm">No classes yet — add some in Settings.</div>
+      </div>
+
+      <!-- Notes -->
+      <div class="bg-panel2 border border-border rounded-lg p-4">
+        <div class="text-xs uppercase tracking-wide text-mute mb-3">Notes</div>
+        <textarea id="sessNotes" rows="2" placeholder="Optional notes…" class="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent"></textarea>
+      </div>
+
+      <!-- Totals -->
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-panel2 border border-border rounded-lg p-4">
+          <div class="text-xs text-mute">Total Silver</div>
+          <div class="mt-1 text-2xl font-semibold" id="sessTotalSilver">0</div>
+        </div>
+        <div class="bg-panel2 border border-border rounded-lg p-4">
+          <div class="text-xs text-mute">Silver / Hour</div>
+          <div class="mt-1 text-2xl font-semibold" id="sessSilverHr">0</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="px-5 py-4 border-t border-border flex justify-end gap-2">
+      <button class="modal-close h-10 px-4 bg-panel border border-border hover:text-white text-mute rounded-md text-sm" data-close="sessionModal">Cancel</button>
+      <button id="sessSaveBtn" class="h-10 px-5 bg-accent2 hover:brightness-110 rounded-md text-sm font-semibold">Save Session</button>
+    </div>
+  </div>
+</div>
+
+<!-- =================== SESSION DETAIL MODAL =================== -->
+<div id="sessionDetailModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto">
+  <div class="bg-panel border border-border rounded-xl w-full max-w-xl my-8 shadow-2xl">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border">
+      <div class="flex items-center gap-3">
+        <span id="sessDetailAvatar"></span>
+        <div>
+          <h3 class="text-base font-semibold" id="sessDetailSpot">—</h3>
+          <p class="text-xs text-mute" id="sessDetailWhen">—</p>
+        </div>
+      </div>
+      <button class="modal-close text-mute hover:text-white" data-close="sessionDetailModal">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="p-5 space-y-4 text-sm">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-panel2 border border-border rounded-md p-3">
+          <div class="text-xs text-mute">Class</div>
+          <div class="mt-1" id="sessDetailClass">—</div>
+        </div>
+        <div class="bg-panel2 border border-border rounded-md p-3">
+          <div class="text-xs text-mute">Time grinded</div>
+          <div class="mt-1" id="sessDetailTime">—</div>
+        </div>
+        <div class="bg-panel2 border border-border rounded-md p-3">
+          <div class="text-xs text-mute">Drop Rate</div>
+          <div class="mt-1" id="sessDetailDropRate">—</div>
+        </div>
+        <div class="bg-panel2 border border-border rounded-md p-3">
+          <div class="text-xs text-mute">Tax</div>
+          <div class="mt-1" id="sessDetailTax">—</div>
+        </div>
+      </div>
+
+      <div class="bg-panel2 border border-border rounded-md p-3">
+        <div class="text-xs text-mute mb-2">Loot</div>
+        <div id="sessDetailLoot" class="space-y-1"></div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-panel2 border border-border rounded-md p-3">
+          <div class="text-xs text-mute">Total Silver</div>
+          <div class="mt-1 text-xl font-semibold text-accent2" id="sessDetailTotal">—</div>
+        </div>
+        <div class="bg-panel2 border border-border rounded-md p-3">
+          <div class="text-xs text-mute">Silver / Hour</div>
+          <div class="mt-1 text-xl font-semibold" id="sessDetailRate">—</div>
+        </div>
+      </div>
+
+      <div id="sessDetailNotesWrap" class="bg-panel2 border border-border rounded-md p-3 hidden">
+        <div class="text-xs text-mute">Notes</div>
+        <div class="mt-1 whitespace-pre-wrap" id="sessDetailNotes"></div>
+      </div>
+    </div>
+    <div class="px-5 py-4 border-t border-border flex justify-between gap-2">
+      <button id="sessDetailDelete" class="h-10 px-4 bg-red-500/15 hover:bg-red-500/25 text-red-300 rounded-md text-sm font-medium">Delete session</button>
+      <button class="modal-close h-10 px-4 bg-panel border border-border hover:text-white text-mute rounded-md text-sm" data-close="sessionDetailModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- =================== ALL SESSIONS MODAL =================== -->
+<div id="allSessionsModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+  <div class="bg-panel border border-border rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border">
+      <h3 id="allSessionsTitle" class="text-base font-semibold">All Sessions</h3>
+      <button class="modal-close text-mute hover:text-white" data-close="allSessionsModal">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="allSessionsList" class="overflow-y-auto p-3 space-y-1.5 flex-1"></div>
+  </div>
+</div>
+
+<!-- =================== ITEM PICKER MODAL =================== -->
+<div id="itemPickerModal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+  <div class="bg-panel border border-border rounded-xl w-full max-w-lg max-h-[80vh] flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border">
+      <h3 id="itemPickerTitle" class="text-base font-semibold">Link items</h3>
+      <button class="modal-close text-mute hover:text-white" data-close="itemPickerModal">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="px-5 py-3 border-b border-border">
+      <input id="itemPickerSearch" type="text" placeholder="Search items" class="w-full bg-panel2 border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent placeholder:text-mute2">
+    </div>
+    <div id="itemPickerList" class="overflow-y-auto p-3 space-y-2 flex-1"></div>
+    <div class="px-5 py-3 border-t border-border flex justify-end gap-2">
+      <button class="modal-close h-9 px-4 bg-panel border border-border hover:text-white text-mute rounded-md text-sm" data-close="itemPickerModal">Cancel</button>
+      <button id="itemPickerSaveBtn" class="h-9 px-5 bg-accent hover:brightness-110 rounded-md text-sm font-semibold">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/chart.umd.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+
+# Local environment and logs
+.env
+.env.*
+*.log
+
+# User data exports
+BDO-GrindTracker-data-*.json
+garmoth-clone-data-*.json
