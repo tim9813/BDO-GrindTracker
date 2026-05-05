@@ -188,7 +188,8 @@ function sanitizeStoreData(data) {
 
       const hours = Math.floor(clampNumber(s.hours, 0, Number.MAX_SAFE_INTEGER));
       const mins = Math.floor(clampNumber(s.mins, 0, 59));
-      const totalHours = hours + mins / 60;
+      const secs = Math.floor(clampNumber(s.secs, 0, 59));
+      const totalHours = hours + mins / 60 + secs / 3600;
       const applyTax = s.applyTax !== false;
       let totalSilver = 0;
       for (const [itemId, qty] of Object.entries(loot)) {
@@ -208,6 +209,7 @@ function sanitizeStoreData(data) {
         classId: classIdMap.get(String(s.classId ?? '')) || null,
         hours,
         mins,
+        secs,
         totalHours,
         dropRatePct: clampNumber(s.dropRatePct, 0, Number.MAX_SAFE_INTEGER),
         applyTax,
@@ -274,6 +276,14 @@ function fmtHours(totalHours) {
   const m = totalMinutes % 60;
   if (h === 0) return `${m}m`;
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function fmtSessionDuration(hours = 0, mins = 0, secs = 0) {
+  const h = Math.floor(clampNumber(hours));
+  const m = Math.floor(clampNumber(mins, 0, 59));
+  const s = Math.floor(clampNumber(secs, 0, 59));
+  if (s > 0) return `${h}h ${m}m ${s}s`;
+  return `${h}h ${m}m`;
 }
 
 function closeModal(id) { $('#' + id).classList.add('hidden'); }
@@ -932,6 +942,7 @@ function openSessionForm(spot) {
 
   $('#sessHours').value = 1;
   $('#sessMins').value = 0;
+  $('#sessSecs').value = 0;
   $('#sessDropRate').value = 100;
   $('#sessApplyTax').checked = true;
   $('#sessNotes').value = '';
@@ -1010,7 +1021,8 @@ function renderClassPicker() {
 function getSessionTimeInput() {
   const hours = Math.floor(clampNumber($('#sessHours').value));
   const mins = Math.floor(clampNumber($('#sessMins').value, 0, 59));
-  return { hours, mins, totalHours: hours + mins / 60 };
+  const secs = Math.floor(clampNumber($('#sessSecs').value, 0, 59));
+  return { hours, mins, secs, totalHours: hours + mins / 60 + secs / 3600 };
 }
 
 function calcSession() {
@@ -1033,14 +1045,14 @@ function recalcTotals() {
   $('#sessTotalSilver').textContent = fmtSilver(total);
   $('#sessSilverHr').textContent = fmtSilver(perHour);
 }
-['sessHours','sessMins','sessDropRate','sessApplyTax'].forEach(id => {
+['sessHours','sessMins','sessSecs','sessDropRate','sessApplyTax'].forEach(id => {
   $('#' + id)?.addEventListener('input', recalcTotals);
   $('#' + id)?.addEventListener('change', recalcTotals);
 });
 
 $('#sessSaveBtn')?.addEventListener('click', () => {
   const { total, perHour, totalHours } = calcSession();
-  const { hours, mins } = getSessionTimeInput();
+  const { hours, mins, secs } = getSessionTimeInput();
   const session = {
     id: uid(),
     createdAt: new Date().toISOString(),
@@ -1050,6 +1062,7 @@ $('#sessSaveBtn')?.addEventListener('click', () => {
     classId: sessionContext.classId,
     hours,
     mins,
+    secs,
     totalHours,
     dropRatePct: clampNumber($('#sessDropRate').value),
     applyTax: $('#sessApplyTax').checked,
@@ -1165,6 +1178,34 @@ function formatDetectedTime(t) {
   return `${t.hours}h ${t.mins}m${t.secs ? ` ${t.secs}s` : ''}`;
 }
 
+function cropImageToDataUrl(img, rect, scale = 2) {
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(rect.w * scale));
+  cv.height = Math.max(1, Math.round(rect.h * scale));
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, cv.width, cv.height);
+  return cv.toDataURL('image/png');
+}
+
+async function recognizeGrindTime(worker, img, fullText = '') {
+  const fromFull = parseTimeFromText(fullText);
+  if (fromFull) return fromFull;
+
+  const crops = [
+    { x: 0, y: 0, w: img.naturalWidth * 0.72, h: img.naturalHeight * 0.38 },
+    { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight * 0.32 },
+  ];
+  await setOcrMode('full');
+  for (const rect of crops) {
+    const { data } = await worker.recognize(cropImageToDataUrl(img, rect, 3));
+    const parsed = parseTimeFromText(data.text || '');
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
 function clearOcr() {
   _ocrDetections = [];
   _ocrImageDataUrl = null;
@@ -1224,7 +1265,7 @@ async function handleOcrFile(file) {
     setOcrLoading('Detecting time…');
     await setOcrMode('full');
     const fullScan = await worker.recognize(dataUrl);
-    _ocrDetectedTime = parseTimeFromText(fullScan.data.text || '');
+    _ocrDetectedTime = await recognizeGrindTime(worker, img, fullScan.data.text || '');
 
     // Pass 2: digits only → numbers list
     setOcrLoading('Detecting numbers…');
@@ -1401,9 +1442,9 @@ function loadMatchImage(src) {
 }
 
 function slotIconCrop(slot, maxW, maxH) {
-  const padX = Math.round(slot.w * 0.13);
-  const padTop = Math.round(slot.h * 0.12);
-  const padBottom = Math.round(slot.h * 0.32);
+  const padX = Math.max(2, Math.round(slot.w * 0.06));
+  const padTop = Math.max(2, Math.round(slot.h * 0.06));
+  const padBottom = Math.max(7, Math.round(slot.h * 0.22));
   return clampRect({
     x: slot.x + padX,
     y: slot.y + padTop,
@@ -1515,12 +1556,12 @@ function quantityFromDetectionsForSlot(slot, detections) {
 
 function makeQuantityCrop(sourceCanvas, slot, mode = 'text') {
   const crop = clampRect({
-    x: slot.x - Math.round(slot.w * 0.10),
-    y: slot.y + Math.round(slot.h * 0.35),
-    w: slot.w + Math.round(slot.w * 0.20),
-    h: Math.round(slot.h * 0.68),
+    x: slot.x + 1,
+    y: slot.y + Math.round(slot.h * 0.52),
+    w: slot.w - 2,
+    h: Math.round(slot.h * 0.48),
   }, sourceCanvas.width, sourceCanvas.height);
-  const scale = 8;
+  const scale = 10;
   const cv = document.createElement('canvas');
   cv.width = Math.max(1, Math.round(crop.w * scale));
   cv.height = Math.max(1, Math.round(crop.h * scale));
@@ -1538,8 +1579,8 @@ function makeQuantityCrop(sourceCanvas, slot, mode = 'text') {
     const min = Math.min(r, g, b);
     const saturation = max - min;
     const brightness = (r + g + b) / 3;
-    const isStrictText = min > 76 && saturation < 92;
-    const isLooseText = brightness > 58 && saturation < 128;
+    const isStrictText = brightness > 88 && saturation < 110;
+    const isLooseText = brightness > 66 && saturation < 145;
     const isText = mode === 'loose' ? isLooseText : isStrictText;
     data[i] = data[i + 1] = data[i + 2] = isText ? 0 : 255;
     data[i + 3] = 255;
@@ -1565,7 +1606,11 @@ function chooseQuantityCandidate(candidates, fallback) {
   if (fallback && fallback.qty > 1) usable.push({ ...fallback, source: 'full-scan' });
   if (!usable.length) return fallback || { qty: 1, text: '1', index: -1 };
   return usable.sort((a, b) => {
-    const lenDiff = String(b.text).length - String(a.text).length;
+    const aText = String(a.text);
+    const bText = String(b.text);
+    const suspicious = value => value.length >= 5 && /^(?:19|89|99)/.test(value);
+    if (suspicious(aText) !== suspicious(bText)) return suspicious(aText) ? 1 : -1;
+    const lenDiff = Math.min(bText.length, 5) - Math.min(aText.length, 5);
     if (lenDiff) return lenDiff;
     return (b.confidence || 0) - (a.confidence || 0);
   })[0];
@@ -1689,7 +1734,8 @@ function renderOcrList() {
       : '';
     return `
       <div class="grid grid-cols-[auto_1fr_auto] gap-3 items-center bg-panel border border-border rounded-md px-3 py-1.5">
-        <div class="text-sm font-mono w-20 tabular-nums">${escapeHtml(d.text)}</div>
+        <input type="number" min="0" step="1" value="${escapeAttr(d.qty)}" data-ocr-qty="${i}"
+          class="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-sm font-mono tabular-nums focus:outline-none focus:border-accent">
         <div class="min-w-0">
         <select data-ocr-pick="${i}" class="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent">
           <option value="">— Skip —</option>
@@ -1708,6 +1754,13 @@ function renderOcrList() {
     _ocrDetections[Number(s.dataset.ocrPick)].itemId = s.value || null;
     drawOcrOverlay();
     updateOcrSummary();
+  }));
+  $$('[data-ocr-qty]', wrap).forEach(inp => inp.addEventListener('input', () => {
+    const i = Number(inp.dataset.ocrQty);
+    const qty = Math.floor(clampNumber(inp.value));
+    _ocrDetections[i].qty = qty;
+    _ocrDetections[i].text = String(qty);
+    drawOcrOverlay();
   }));
   $$('[data-ocr-remove]', wrap).forEach(b => b.addEventListener('click', () => {
     _ocrDetections.splice(Number(b.dataset.ocrRemove), 1);
@@ -1800,6 +1853,10 @@ function applyOcrToLoot() {
     $('#sessMins').value = mins;
     $('#sessMins').dispatchEvent(new Event('input'));
   }
+  if (_ocrDetectedTime?.secs != null) {
+    $('#sessSecs').value = Math.min(59, _ocrDetectedTime.secs);
+    $('#sessSecs').dispatchEvent(new Event('input'));
+  }
   for (const [itemId, qty] of Object.entries(additions)) {
     sessionContext.lootQty[itemId] = qty;
   }
@@ -1815,8 +1872,10 @@ function applyDetectedTime() {
   if (!_ocrDetectedTime) return;
   $('#sessHours').value = _ocrDetectedTime.hours;
   $('#sessMins').value  = Math.min(59, _ocrDetectedTime.mins);
+  $('#sessSecs').value  = Math.min(59, _ocrDetectedTime.secs || 0);
   $('#sessHours').dispatchEvent(new Event('input'));
   $('#sessMins').dispatchEvent(new Event('input'));
+  $('#sessSecs').dispatchEvent(new Event('input'));
   $('#sessOcrTime').classList.add('hidden');
 }
 
@@ -1917,7 +1976,7 @@ function sessionRowHTML(s) {
       ${avatarHTML({ name: s.spotName, iconUrl: s.spotIconUrl }, 28)}
       <div class="flex-1 min-w-0">
         <div class="text-sm font-medium truncate">${escapeHtml(s.spotName)}</div>
-        <div class="text-[11px] text-mute2">${fmtSilver(s.silverPerHour)}/hr · ${s.hours}h ${s.mins}m</div>
+        <div class="text-[11px] text-mute2">${fmtSilver(s.silverPerHour)}/hr · ${fmtSessionDuration(s.hours, s.mins, s.secs)}</div>
       </div>
       <div class="text-right pr-1">
         <div class="text-sm font-semibold text-accent2">${fmtSilver(s.totalSilver)}</div>
@@ -1988,7 +2047,7 @@ function openSessionDetail(id) {
 
   const cls = s.classId ? store.classes.find(c => c.id === s.classId) : null;
   $('#sessDetailClass').textContent = cls ? cls.name : (s.classId ? '(deleted class)' : 'None');
-  $('#sessDetailTime').textContent = `${s.hours}h ${s.mins}m`;
+  $('#sessDetailTime').textContent = fmtSessionDuration(s.hours, s.mins, s.secs);
   $('#sessDetailDropRate').textContent = `${s.dropRatePct ?? 100}%`;
   $('#sessDetailTax').textContent = s.applyTax ? '15.5% applied' : 'Not applied';
 
