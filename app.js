@@ -1412,7 +1412,19 @@ function slotIconCrop(slot, maxW, maxH) {
   }, maxW, maxH);
 }
 
-function buildSignature(source, crop = null, size = 28) {
+function normalizeVector(values) {
+  const norm = Math.sqrt(values.reduce((sum, n) => sum + n * n, 0)) || 1;
+  return values.map(n => n / norm);
+}
+
+function dotProduct(a, b) {
+  const len = Math.min(a.length, b.length);
+  let dot = 0;
+  for (let i = 0; i < len; i++) dot += a[i] * b[i];
+  return dot;
+}
+
+function buildSignature(source, crop = null, size = 30) {
   const cv = document.createElement('canvas');
   cv.width = size;
   cv.height = size;
@@ -1424,6 +1436,8 @@ function buildSignature(source, crop = null, size = 28) {
   ctx.drawImage(source, sx, sy, sw, sh, 0, 0, size, size);
   const pixels = ctx.getImageData(0, 0, size, size).data;
   const bins = Array(512).fill(0);
+  const chroma = [];
+  const gray = [];
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const i = (y * size + x) * 4;
@@ -1431,24 +1445,44 @@ function buildSignature(source, crop = null, size = 28) {
       const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
       const max = Math.max(r, g, b);
       const min = Math.min(r, g, b);
-      if (max < 34 || (max < 70 && max - min < 18)) continue;
+      if (max < 34 || (max < 70 && max - min < 18)) {
+        chroma.push(0, 0, 0);
+        gray.push(0);
+        continue;
+      }
       const rb = Math.min(7, r >> 5);
       const gb = Math.min(7, g >> 5);
       const bb = Math.min(7, b >> 5);
       const saturationWeight = 1 + (max - min) / 255;
       bins[(rb << 6) + (gb << 3) + bb] += saturationWeight;
+      chroma.push((r / max) * saturationWeight, (g / max) * saturationWeight, (b / max) * saturationWeight);
+      gray.push((0.299 * r + 0.587 * g + 0.114 * b) / 255);
     }
   }
-  const norm = Math.sqrt(bins.reduce((sum, n) => sum + n * n, 0)) || 1;
-  return bins.map(n => n / norm);
+
+  const edges = [];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const here = gray[y * size + x] || 0;
+      const right = gray[y * size + Math.min(size - 1, x + 1)] || 0;
+      const down = gray[Math.min(size - 1, y + 1) * size + x] || 0;
+      edges.push(Math.abs(here - right), Math.abs(here - down));
+    }
+  }
+
+  return {
+    hist: normalizeVector(bins),
+    chroma: normalizeVector(chroma),
+    edges: normalizeVector(edges),
+  };
 }
 
 function compareSignatures(a, b) {
-  const len = Math.min(a.length, b.length);
-  if (len < 30) return 0;
-  let dot = 0;
-  for (let i = 0; i < len; i++) dot += a[i] * b[i];
-  return dot;
+  if (!a || !b) return 0;
+  const hist = dotProduct(a.hist || [], b.hist || []);
+  const chroma = dotProduct(a.chroma || [], b.chroma || []);
+  const edges = dotProduct(a.edges || [], b.edges || []);
+  return hist * 0.42 + chroma * 0.36 + edges * 0.22;
 }
 
 async function buildItemTemplates(items) {
@@ -1479,14 +1513,14 @@ function quantityFromDetectionsForSlot(slot, detections) {
   return best ? { qty: best.d.qty, text: best.d.text, index: best.index } : { qty: 1, text: '1', index: -1 };
 }
 
-function makeQuantityCrop(sourceCanvas, slot) {
+function makeQuantityCrop(sourceCanvas, slot, mode = 'text') {
   const crop = clampRect({
-    x: slot.x,
-    y: slot.y + Math.round(slot.h * 0.48),
-    w: slot.w,
-    h: Math.round(slot.h * 0.52),
+    x: slot.x - Math.round(slot.w * 0.10),
+    y: slot.y + Math.round(slot.h * 0.35),
+    w: slot.w + Math.round(slot.w * 0.20),
+    h: Math.round(slot.h * 0.68),
   }, sourceCanvas.width, sourceCanvas.height);
-  const scale = 6;
+  const scale = 8;
   const cv = document.createElement('canvas');
   cv.width = Math.max(1, Math.round(crop.w * scale));
   cv.height = Math.max(1, Math.round(crop.h * scale));
@@ -1494,13 +1528,19 @@ function makeQuantityCrop(sourceCanvas, slot) {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(sourceCanvas, crop.x, crop.y, crop.w, crop.h, 0, 0, cv.width, cv.height);
 
+  if (mode === 'raw') return cv.toDataURL('image/png');
+
   const image = ctx.getImageData(0, 0, cv.width, cv.height);
   const data = image.data;
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
     const max = Math.max(r, g, b);
     const min = Math.min(r, g, b);
-    const isText = min > 92 && max - min < 95;
+    const saturation = max - min;
+    const brightness = (r + g + b) / 3;
+    const isStrictText = min > 76 && saturation < 92;
+    const isLooseText = brightness > 58 && saturation < 128;
+    const isText = mode === 'loose' ? isLooseText : isStrictText;
     data[i] = data[i + 1] = data[i + 2] = isText ? 0 : 255;
     data[i + 3] = 255;
   }
@@ -1508,21 +1548,51 @@ function makeQuantityCrop(sourceCanvas, slot) {
   return cv.toDataURL('image/png');
 }
 
-async function recognizeSlotQuantity(worker, sourceCanvas, slot) {
-  if (!worker) return null;
-  await setOcrMode('line-digits');
-  const url = makeQuantityCrop(sourceCanvas, slot);
-  const { data } = await worker.recognize(url);
-  const cleaned = (data.text || '').replace(/[^\d]/g, '');
-  if (!cleaned) return null;
+function parseQuantityText(text) {
+  const cleaned = String(text || '')
+    .replace(/[oO]/g, '0')
+    .replace(/[iIl|]/g, '1')
+    .replace(/[sS]/g, '5')
+    .replace(/[bB]/g, '8')
+    .replace(/[^\d]/g, '');
+  if (!cleaned || cleaned.length > 8) return null;
   const qty = parseInt(cleaned, 10);
   return isFinite(qty) && qty > 0 ? { qty, text: cleaned, index: -1 } : null;
 }
 
+function chooseQuantityCandidate(candidates, fallback) {
+  const usable = candidates.filter(Boolean);
+  if (fallback && fallback.qty > 1) usable.push({ ...fallback, source: 'full-scan' });
+  if (!usable.length) return fallback || { qty: 1, text: '1', index: -1 };
+  return usable.sort((a, b) => {
+    const lenDiff = String(b.text).length - String(a.text).length;
+    if (lenDiff) return lenDiff;
+    return (b.confidence || 0) - (a.confidence || 0);
+  })[0];
+}
+
+async function recognizeSlotQuantity(worker, sourceCanvas, slot, fallback = null) {
+  if (!worker) return null;
+  await setOcrMode('line-digits');
+  const candidates = [];
+  for (const mode of ['text', 'loose', 'raw']) {
+    try {
+      const url = makeQuantityCrop(sourceCanvas, slot, mode);
+      const { data } = await worker.recognize(url);
+      const parsed = parseQuantityText(data.text);
+      if (parsed) candidates.push({ ...parsed, confidence: data.confidence || 0, source: mode });
+    } catch {
+      // Keep trying the other variants.
+    }
+  }
+  return chooseQuantityCandidate(candidates, fallback);
+}
+
 async function quantityForSlot(slot, detections, sourceCanvas, worker) {
-  const direct = await recognizeSlotQuantity(worker, sourceCanvas, slot);
+  const fallback = quantityFromDetectionsForSlot(slot, detections);
+  const direct = await recognizeSlotQuantity(worker, sourceCanvas, slot, fallback);
   if (direct) return direct;
-  return quantityFromDetectionsForSlot(slot, detections);
+  return fallback;
 }
 
 async function detectLootMatches(img, quantityDetections, searchRect = null, worker = null) {
@@ -1548,7 +1618,7 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
       .sort((a, b) => b.score - a.score);
     const best = scored[0];
     const second = scored[1];
-    if (!best || best.score < 0.34 || (second && best.score - second.score < 0.025)) continue;
+    if (!best || best.score < 0.42 || (second && best.score - second.score < 0.03)) continue;
 
     const quantity = await quantityForSlot(slot, quantityDetections, sourceCanvas, worker);
     matches.push({
