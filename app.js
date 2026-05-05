@@ -1,36 +1,14 @@
 // ==================== Storage ====================
 const STORAGE_KEY = 'BDO-GrindTracker:v1';
 const LEGACY_STORAGE_KEY = 'garmoth-clone:v1';
+const TAX = 0.155;
 
 function loadStore() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return { spots: [], items: [], classes: [], sessions: [] };
     const p = JSON.parse(raw);
-    const items = Array.isArray(p.items) ? [...p.items] : [];
-    const spots = (p.spots || []).map(s => {
-      // Migrate old per-spot items[] into shared library + itemIds[]
-      if (Array.isArray(s.items) && !Array.isArray(s.itemIds)) {
-        const ids = [];
-        for (const it of s.items) {
-          let existing = items.find(x => x.name === it.name);
-          if (!existing) {
-            existing = {
-              id: it.id || uid(),
-              name: it.name,
-              imageUrl: it.imageUrl || '',
-              price: Number(it.price) || 0,
-              taxable: !!it.taxable,
-            };
-            items.push(existing);
-          }
-          ids.push(existing.id);
-        }
-        return { id: s.id, name: s.name, iconUrl: s.iconUrl || null, itemIds: ids };
-      }
-      return { id: s.id, name: s.name, iconUrl: s.iconUrl || null, itemIds: Array.isArray(s.itemIds) ? s.itemIds : [] };
-    });
-    return { spots, items, classes: p.classes || [], sessions: p.sessions || [] };
+    return sanitizeStoreData(migrateStoreData(p));
   } catch {
     return { spots: [], items: [], classes: [], sessions: [] };
   }
@@ -48,6 +26,162 @@ function clampNumber(value, min = 0, max = Infinity) {
   const n = Number(value);
   if (!isFinite(n)) return min;
   return Math.min(max, Math.max(min, n));
+}
+
+function migrateStoreData(data) {
+  const p = data && typeof data === 'object' ? data : {};
+  const items = Array.isArray(p.items) ? [...p.items] : [];
+  const spots = (Array.isArray(p.spots) ? p.spots : []).map(s => {
+    if (!s || typeof s !== 'object') return {};
+    // Migrate old per-spot items[] into shared library + itemIds[].
+    if (Array.isArray(s.items) && !Array.isArray(s.itemIds)) {
+      const ids = [];
+      for (const it of s.items) {
+        if (!it || typeof it !== 'object') continue;
+        let existing = items.find(x => x && x.name === it.name);
+        if (!existing) {
+          existing = {
+            id: it.id || uid(),
+            name: it.name,
+            imageUrl: it.imageUrl || '',
+            price: Number(it.price) || 0,
+            taxable: !!it.taxable,
+          };
+          items.push(existing);
+        }
+        ids.push(existing.id);
+      }
+      return { id: s.id, name: s.name, iconUrl: s.iconUrl || null, itemIds: ids };
+    }
+    return { id: s.id, name: s.name, iconUrl: s.iconUrl || null, itemIds: Array.isArray(s.itemIds) ? s.itemIds : [] };
+  });
+  return {
+    spots,
+    items,
+    classes: Array.isArray(p.classes) ? p.classes : [],
+    sessions: Array.isArray(p.sessions) ? p.sessions : [],
+  };
+}
+
+function safeText(value, maxLength = 160) {
+  return String(value ?? '').replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, maxLength);
+}
+
+function safeImageUrl(value) {
+  const raw = safeText(value, 4096);
+  if (!raw) return '';
+  const normalized = normalizeImageUrl(raw);
+  if (/^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(normalized)) return normalized;
+  try {
+    const url = new URL(normalized, document.baseURI);
+    return (url.protocol === 'https:' || url.protocol === 'http:') ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function safeId(value, prefix, idMap, usedIds) {
+  const key = String(value ?? '');
+  if (idMap.has(key)) return idMap.get(key);
+  const cleaned = safeText(value, 80).replace(/[^a-z0-9_-]/gi, '');
+  let id = cleaned || `${prefix}_${uid()}`;
+  while (usedIds.has(id)) id = `${prefix}_${uid()}`;
+  usedIds.add(id);
+  idMap.set(key, id);
+  return id;
+}
+
+function uniqueById(list) {
+  const seen = new Set();
+  return list.filter(entry => {
+    if (seen.has(entry.id)) return false;
+    seen.add(entry.id);
+    return true;
+  });
+}
+
+function sanitizeStoreData(data) {
+  const p = data && typeof data === 'object' ? data : {};
+  const itemIdMap = new Map();
+  const spotIdMap = new Map();
+  const classIdMap = new Map();
+  const usedIds = new Set();
+
+  const items = uniqueById((Array.isArray(p.items) ? p.items : [])
+    .filter(it => it && typeof it === 'object')
+    .map(it => ({
+      id: safeId(it.id, 'item', itemIdMap, usedIds),
+      name: safeText(it.name, 120) || 'Untitled item',
+      imageUrl: safeImageUrl(it.imageUrl),
+      price: Math.round(clampNumber(it.price, 0, Number.MAX_SAFE_INTEGER)),
+      taxable: !!it.taxable,
+    })));
+
+  const itemIds = new Set(items.map(it => it.id));
+  const spots = uniqueById((Array.isArray(p.spots) ? p.spots : [])
+    .filter(s => s && typeof s === 'object')
+    .map(s => ({
+      id: safeId(s.id, 'spot', spotIdMap, usedIds),
+      name: safeText(s.name, 120) || 'Untitled spot',
+      iconUrl: safeImageUrl(s.iconUrl) || null,
+      itemIds: (Array.isArray(s.itemIds) ? s.itemIds : [])
+        .map(id => itemIdMap.get(String(id ?? '')))
+        .filter(id => id && itemIds.has(id)),
+    })));
+
+  const classes = uniqueById((Array.isArray(p.classes) ? p.classes : [])
+    .filter(c => c && typeof c === 'object')
+    .map(c => ({
+      id: safeId(c.id, 'class', classIdMap, usedIds),
+      name: safeText(c.name, 120) || 'Untitled class',
+      iconUrl: safeImageUrl(c.iconUrl) || null,
+    })));
+
+  const itemById = new Map(items.map(it => [it.id, it]));
+  const sessions = uniqueById((Array.isArray(p.sessions) ? p.sessions : [])
+    .filter(s => s && typeof s === 'object')
+    .map(s => {
+      const loot = {};
+      for (const [rawItemId, qty] of Object.entries(s.loot || {})) {
+        const itemId = itemIdMap.get(String(rawItemId));
+        if (!itemId || !itemById.has(itemId)) continue;
+        const cleanQty = Math.floor(clampNumber(qty, 0, Number.MAX_SAFE_INTEGER));
+        if (cleanQty > 0) loot[itemId] = (loot[itemId] || 0) + cleanQty;
+      }
+
+      const hours = Math.floor(clampNumber(s.hours, 0, Number.MAX_SAFE_INTEGER));
+      const mins = Math.floor(clampNumber(s.mins, 0, 59));
+      const totalHours = hours + mins / 60;
+      const applyTax = s.applyTax !== false;
+      let totalSilver = 0;
+      for (const [itemId, qty] of Object.entries(loot)) {
+        const it = itemById.get(itemId);
+        let revenue = it.price * qty;
+        if (applyTax && it.taxable) revenue *= (1 - TAX);
+        totalSilver += revenue;
+      }
+
+      const createdAt = Number.isFinite(new Date(s.createdAt).getTime()) ? new Date(s.createdAt).toISOString() : new Date().toISOString();
+      return {
+        id: safeId(s.id, 'session', new Map(), usedIds),
+        createdAt,
+        spotId: spotIdMap.get(String(s.spotId ?? '')) || null,
+        spotName: safeText(s.spotName, 120) || 'Unknown spot',
+        spotIconUrl: safeImageUrl(s.spotIconUrl) || null,
+        classId: classIdMap.get(String(s.classId ?? '')) || null,
+        hours,
+        mins,
+        totalHours,
+        dropRatePct: clampNumber(s.dropRatePct, 0, Number.MAX_SAFE_INTEGER),
+        applyTax,
+        loot,
+        notes: safeText(s.notes, 1000),
+        totalSilver,
+        silverPerHour: totalHours > 0 ? totalSilver / totalHours : 0,
+      };
+    }));
+
+  return { spots, items, classes, sessions };
 }
 
 function colorFor(str) {
@@ -836,7 +970,6 @@ function renderClassPicker() {
   }));
 }
 
-const TAX = 0.155;
 function getSessionTimeInput() {
   const hours = Math.floor(clampNumber($('#sessHours').value));
   const mins = Math.floor(clampNumber($('#sessMins').value, 0, 59));
@@ -1517,19 +1650,20 @@ function importJsonFile(file) {
       return;
     }
 
+    const nextStore = sanitizeStoreData(migrateStoreData(data));
     const summary = `Import will REPLACE current data:
-  • ${data.spots.length} spot${data.spots.length === 1 ? '' : 's'}
-  • ${data.items.length} item${data.items.length === 1 ? '' : 's'}
-  • ${data.classes.length} class${data.classes.length === 1 ? '' : 'es'}
-  • ${data.sessions.length} session${data.sessions.length === 1 ? '' : 's'}
+  • ${nextStore.spots.length} spot${nextStore.spots.length === 1 ? '' : 's'}
+  • ${nextStore.items.length} item${nextStore.items.length === 1 ? '' : 's'}
+  • ${nextStore.classes.length} class${nextStore.classes.length === 1 ? '' : 'es'}
+  • ${nextStore.sessions.length} session${nextStore.sessions.length === 1 ? '' : 's'}
 
 Continue?`;
     if (!confirm(summary)) return;
 
-    store.spots    = data.spots;
-    store.items    = data.items;
-    store.classes  = data.classes;
-    store.sessions = data.sessions;
+    store.spots    = nextStore.spots;
+    store.items    = nextStore.items;
+    store.classes  = nextStore.classes;
+    store.sessions = nextStore.sessions;
     saveStore();
     renderItemList(); renderSpotList(); renderClassList();
     renderDashboard();
