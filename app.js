@@ -1195,7 +1195,11 @@ async function handleOcrFile(file) {
     setOcrLoading('Detecting numbers…');
     await setOcrMode('digits');
     const digitScan = await worker.recognize(dataUrl);
-    _ocrDetections = extractDetections(digitScan.data.words, { x: 0, y: 0 });
+    const digitDetections = extractDetections(digitScan.data.words, { x: 0, y: 0 });
+
+    setOcrLoading('Matching loot icons...');
+    const lootMatches = await detectLootMatches(img, digitDetections);
+    _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
 
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrPreview').src = dataUrl;
@@ -1244,6 +1248,222 @@ function extractDetections(words, offset = { x: 0, y: 0 }, scale = 1) {
     .filter(Boolean);
 }
 
+function contentPixel(r, g, b, a = 255) {
+  if (a < 20) return false;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const saturation = max - min;
+  return (max > 45 && saturation > 26) || (max > 150 && saturation > 12);
+}
+
+function scoreGroups(scores, threshold, offset = 0) {
+  const groups = [];
+  let start = -1, sum = 0;
+  for (let i = 0; i <= scores.length; i++) {
+    const active = i < scores.length && scores[i] >= threshold;
+    if (active && start < 0) { start = i; sum = 0; }
+    if (active) sum += scores[i];
+    if ((!active || i === scores.length) && start >= 0) {
+      groups.push({ start: start + offset, end: i - 1 + offset, sum });
+      start = -1;
+    }
+  }
+  return groups;
+}
+
+function mergeCloseGroups(groups, maxGap) {
+  const merged = [];
+  for (const group of groups) {
+    const last = merged[merged.length - 1];
+    if (last && group.start - last.end <= maxGap) {
+      last.end = group.end;
+      last.sum += group.sum;
+    } else {
+      merged.push({ ...group });
+    }
+  }
+  return merged;
+}
+
+function clampRect(rect, w, h) {
+  const x = Math.max(0, Math.min(w - 1, rect.x));
+  const y = Math.max(0, Math.min(h - 1, rect.y));
+  const x2 = Math.max(x + 1, Math.min(w, rect.x + rect.w));
+  const y2 = Math.max(y + 1, Math.min(h, rect.y + rect.h));
+  return { x, y, w: x2 - x, h: y2 - y };
+}
+
+function detectLootSlotsFromCanvas(sourceCanvas, searchRect = null) {
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+  const xStart = searchRect ? Math.max(0, Math.floor(searchRect.x)) : 0;
+  const xEnd = searchRect ? Math.min(w, Math.ceil(searchRect.x + searchRect.w)) : w;
+  const yStart = searchRect ? Math.max(0, Math.floor(searchRect.y)) : Math.floor(h * 0.42);
+  const yEnd = searchRect ? Math.min(h, Math.ceil(searchRect.y + searchRect.h)) : Math.floor(h * 0.78);
+  const scanW = Math.max(1, xEnd - xStart);
+  const scanH = Math.max(1, yEnd - yStart);
+  const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+  const data = ctx.getImageData(xStart, yStart, scanW, scanH).data;
+  const rowScores = Array(scanH).fill(0);
+
+  for (let y = 0; y < scanH; y++) {
+    for (let x = 0; x < scanW; x++) {
+      const i = (y * scanW + x) * 4;
+      if (contentPixel(data[i], data[i + 1], data[i + 2], data[i + 3])) rowScores[y]++;
+    }
+  }
+
+  const rowThreshold = Math.max(8, Math.floor(scanW * 0.035));
+  const rowGroups = scoreGroups(rowScores, rowThreshold, yStart)
+    .filter(g => g.end - g.start >= 12 && g.end - g.start <= Math.max(90, h * 0.35));
+  const row = rowGroups.sort((a, b) => b.sum - a.sum)[0];
+  if (!row) return [];
+
+  const rowPad = Math.max(4, Math.round((row.end - row.start) * 0.12));
+  const y0 = Math.max(yStart, row.start - rowPad);
+  const y1 = Math.min(yEnd, row.end + rowPad);
+  const rowH = y1 - y0 + 1;
+  const rowData = ctx.getImageData(xStart, y0, scanW, rowH).data;
+  const colScores = Array(scanW).fill(0);
+
+  for (let y = 0; y < rowH; y++) {
+    for (let x = 0; x < scanW; x++) {
+      const i = (y * scanW + x) * 4;
+      if (contentPixel(rowData[i], rowData[i + 1], rowData[i + 2], rowData[i + 3])) colScores[x]++;
+    }
+  }
+
+  const colThreshold = Math.max(3, Math.floor(rowH * 0.12));
+  const cols = mergeCloseGroups(scoreGroups(colScores, colThreshold, xStart), 4)
+    .filter(g => {
+      const width = g.end - g.start + 1;
+      return width >= 10 && width <= Math.max(64, rowH * 1.8);
+    });
+
+  const rowCenter = (y0 + y1) / 2;
+  return cols.map(g => {
+    const width = g.end - g.start + 1;
+    const size = Math.max(22, Math.min(58, Math.max(rowH, width + 10)));
+    const center = (g.start + g.end) / 2;
+    return clampRect({
+      x: Math.round(center - size / 2),
+      y: Math.round(rowCenter - size / 2),
+      w: Math.round(size),
+      h: Math.round(size),
+    }, w, h);
+  });
+}
+
+function loadMatchImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.referrerPolicy = 'no-referrer';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Image failed to load'));
+    img.src = normalizeImageUrl(src);
+  });
+}
+
+function buildSignature(source, crop = null, size = 18) {
+  const cv = document.createElement('canvas');
+  cv.width = size;
+  cv.height = size;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const sx = crop ? crop.x : 0;
+  const sy = crop ? crop.y : 0;
+  const sw = crop ? crop.w : source.naturalWidth || source.width;
+  const sh = crop ? crop.h : source.naturalHeight || source.height;
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, size, size);
+  const pixels = ctx.getImageData(0, 0, size, size).data;
+  const out = [];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (x > size * 0.62 && y > size * 0.62) continue;
+      const i = (y * size + x) * 4;
+      if (pixels[i + 3] < 20) continue;
+      out.push(pixels[i], pixels[i + 1], pixels[i + 2]);
+    }
+  }
+  return out;
+}
+
+function compareSignatures(a, b) {
+  const len = Math.min(a.length, b.length);
+  if (len < 30) return 0;
+  let diff = 0;
+  for (let i = 0; i < len; i++) diff += Math.abs(a[i] - b[i]);
+  return Math.max(0, 1 - (diff / len) / 255);
+}
+
+async function buildItemTemplates(items) {
+  const templates = [];
+  for (const item of items) {
+    const src = item.imageUrl || item.iconUrl;
+    if (!src) continue;
+    try {
+      const img = await loadMatchImage(src);
+      templates.push({ item, signature: buildSignature(img) });
+    } catch {
+      // Keep OCR/manual mapping available for images that cannot be sampled.
+    }
+  }
+  return templates;
+}
+
+function quantityForSlot(slot, detections) {
+  const x0 = slot.x - 4;
+  const y0 = slot.y - 4;
+  const x1 = slot.x + slot.w + 8;
+  const y1 = slot.y + slot.h + 8;
+  const candidates = detections
+    .map((d, index) => ({ d, index, cx: (d.bbox.x0 + d.bbox.x1) / 2, cy: (d.bbox.y0 + d.bbox.y1) / 2 }))
+    .filter(c => c.cx >= x0 && c.cx <= x1 && c.cy >= y0 && c.cy <= y1)
+    .sort((a, b) => (b.cy - a.cy) || (b.cx - a.cx));
+  const best = candidates[0];
+  return best ? { qty: best.d.qty, text: best.d.text, index: best.index } : { qty: 1, text: '1', index: -1 };
+}
+
+async function detectLootMatches(img, quantityDetections, searchRect = null) {
+  const items = getSpotItems(sessionContext.spot);
+  if (!items.length) return [];
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = img.naturalWidth;
+  sourceCanvas.height = img.naturalHeight;
+  sourceCanvas.getContext('2d').drawImage(img, 0, 0);
+
+  const slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
+  if (!slots.length) return [];
+
+  const templates = await buildItemTemplates(items);
+  if (!templates.length) return [];
+
+  const matches = [];
+  for (const slot of slots) {
+    const slotSignature = buildSignature(sourceCanvas, slot);
+    const scored = templates
+      .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
+      .sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    const second = scored[1];
+    if (!best || best.score < 0.50 || (second && best.score - second.score < 0.015)) continue;
+
+    const quantity = quantityForSlot(slot, quantityDetections);
+    matches.push({
+      text: quantity.text,
+      qty: quantity.qty,
+      bbox: { x0: slot.x, y0: slot.y, x1: slot.x + slot.w, y1: slot.y + slot.h },
+      itemId: best.item.id,
+      matchedName: best.item.name,
+      score: best.score,
+      source: 'item-match',
+    });
+  }
+
+  return matches;
+}
+
 async function rescanSelection() {
   if (!_ocrSelection || !_ocrImageDataUrl) return;
   const sel = _ocrSelection;
@@ -1265,7 +1485,9 @@ async function rescanSelection() {
     const worker = await getOcrWorker();
     await setOcrMode('digits');
     const { data } = await worker.recognize(cropUrl);
-    _ocrDetections = extractDetections(data.words, { x: sel.x, y: sel.y }, SCALE);
+    const digitDetections = extractDetections(data.words, { x: sel.x, y: sel.y }, SCALE);
+    const lootMatches = await detectLootMatches(img, digitDetections, sel);
+    _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
 
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrResults').classList.remove('hidden');
@@ -1287,20 +1509,25 @@ function renderOcrList() {
     $('#sessOcrSummary').textContent = '';
     return;
   }
-  const itemOpts = items.map(it => `<option value="${it.id}">${escapeHtml(it.name)}</option>`).join('');
   wrap.innerHTML = _ocrDetections.map((d, i) => {
     const itemOptionsRendered = items.map(it =>
       `<option value="${it.id}" ${d.itemId === it.id ? 'selected' : ''}>${escapeHtml(it.name)}</option>`
     ).join('');
+    const matchMeta = d.source === 'item-match'
+      ? `<div class="text-[10px] text-mute2 mt-0.5 truncate">Matched ${escapeHtml(d.matchedName || '')} (${Math.round((d.score || 0) * 100)}%)</div>`
+      : '';
     return `
       <div class="grid grid-cols-[auto_1fr_auto] gap-3 items-center bg-panel border border-border rounded-md px-3 py-1.5">
         <div class="text-sm font-mono w-20 tabular-nums">${escapeHtml(d.text)}</div>
-        <select data-ocr-pick="${i}" class="bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent">
+        <div class="min-w-0">
+        <select data-ocr-pick="${i}" class="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent">
           <option value="">— Skip —</option>
           <option value="__hours__" ${d.itemId === '__hours__' ? 'selected' : ''}>→ Hours</option>
           <option value="__mins__"  ${d.itemId === '__mins__'  ? 'selected' : ''}>→ Minutes</option>
           ${items.length ? `<optgroup label="Loot items">${itemOptionsRendered}</optgroup>` : ''}
         </select>
+        ${matchMeta}
+        </div>
         <button data-ocr-remove="${i}" class="text-red-400 hover:text-red-300 text-xs px-2" title="Remove">×</button>
       </div>
     `;
@@ -1389,6 +1616,10 @@ function applyOcrToLoot() {
     if (d.itemId === '__hours__') hours = d.qty;
     else if (d.itemId === '__mins__') mins = Math.min(59, d.qty);
     else additions[d.itemId] = (additions[d.itemId] || 0) + d.qty;
+  }
+  if (_ocrDetectedTime) {
+    if (hours == null) hours = _ocrDetectedTime.hours;
+    if (mins == null) mins = Math.min(59, _ocrDetectedTime.mins);
   }
   if (hours != null) {
     $('#sessHours').value = hours;

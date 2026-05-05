@@ -466,7 +466,7 @@
 
         <label id="sessOcrDrop" class="block border-2 border-dashed border-border hover:border-accent rounded-md py-5 text-center text-mute2 cursor-pointer transition-colors">
           <div class="text-sm">Drop / paste a screenshot, or click to choose</div>
-          <div class="text-xs mt-1">Detects quantities — you map each one to a loot item</div>
+          <div class="text-xs mt-1">Detects grind time, loot quantities, and linked item icons</div>
           <input id="sessOcrFile" type="file" accept="image/*" class="hidden">
         </label>
 
@@ -479,7 +479,7 @@
             <img id="sessOcrPreview" class="block max-w-full max-h-[260px] rounded-md border border-border" alt="" draggable="false">
             <canvas id="sessOcrOverlay" class="absolute inset-0 cursor-crosshair rounded-md"></canvas>
           </div>
-          <div class="text-xs text-mute2">Drag a rectangle on the image to scan just that region. Yellow = unmapped, green = mapped.</div>
+          <div class="text-xs text-mute2">Drag over the loot row to rescan that region. Yellow = unmapped, green = mapped.</div>
 
           <div id="sessOcrTime" class="hidden bg-panel border border-accent/30 rounded-md px-3 py-2 flex items-center gap-3">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
