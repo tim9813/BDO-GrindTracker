@@ -1107,27 +1107,62 @@ async function setOcrMode(mode) {
   const worker = _ocrWorker;
   if (!worker) return;
   if (mode === 'digits') {
-    await worker.setParameters({ tessedit_char_whitelist: '0123456789,', preserve_interword_spaces: '1' });
+    await worker.setParameters({ tessedit_char_whitelist: '0123456789,', preserve_interword_spaces: '1', tessedit_pageseg_mode: '6' });
+  } else if (mode === 'line-digits') {
+    await worker.setParameters({ tessedit_char_whitelist: '0123456789,', preserve_interword_spaces: '1', tessedit_pageseg_mode: '7' });
   } else {
-    await worker.setParameters({ tessedit_char_whitelist: '', preserve_interword_spaces: '1' });
+    await worker.setParameters({ tessedit_char_whitelist: '', preserve_interword_spaces: '1', tessedit_pageseg_mode: '6' });
   }
 }
 
 function parseTimeFromText(text) {
   if (!text) return null;
-  // "1h 01 m 42 s", "1h 1m", "01:30", "2 hours 30 minutes", etc.
-  let m = text.match(/(\d+)\s*h(?:ours?|rs?)?\s*(\d+)\s*m(?:ins?|inutes?)?/i);
-  if (m) return { hours: parseInt(m[1], 10), mins: Math.min(59, parseInt(m[2], 10)) };
-  m = text.match(/(\d+)\s*hours?\s*(\d+)\s*minutes?/i);
-  if (m) return { hours: parseInt(m[1], 10), mins: Math.min(59, parseInt(m[2], 10)) };
-  m = text.match(/\b(\d{1,2}):(\d{2})(?::\d{2})?\b/);
-  if (m) {
-    const h = parseInt(m[1], 10), mn = parseInt(m[2], 10);
-    if (mn < 60 && h < 24) return { hours: h, mins: mn };
+  const parseNumber = raw => parseInt(String(raw || '').replace(/[oO]/g, '0').replace(/[iIl|]/g, '1'), 10);
+  const parseLine = line => {
+    let m = line.match(/([0-9oOiIl|]+)\s*h(?:ours?|rs?)?\s*([0-9oOiIl|]+)\s*m(?:ins?|inutes?)?(?:\s*([0-9oOiIl|]+)\s*s(?:ec(?:onds?)?)?)?/i);
+    if (m) {
+      const hours = parseNumber(m[1]);
+      const mins = parseNumber(m[2]);
+      const secs = parseNumber(m[3] || 0);
+      if (isFinite(hours) && isFinite(mins) && mins < 60) return { hours, mins, secs: isFinite(secs) ? Math.min(59, secs) : 0 };
+    }
+    m = line.match(/([0-9oOiIl|]+)\s*hours?\s*([0-9oOiIl|]+)\s*minutes?(?:\s*([0-9oOiIl|]+)\s*seconds?)?/i);
+    if (m) {
+      const hours = parseNumber(m[1]);
+      const mins = parseNumber(m[2]);
+      const secs = parseNumber(m[3] || 0);
+      if (isFinite(hours) && isFinite(mins) && mins < 60) return { hours, mins, secs: isFinite(secs) ? Math.min(59, secs) : 0 };
+    }
+    m = line.match(/\b([0-9oOiIl|]{1,2}):([0-9oOiIl|]{2})(?::([0-9oOiIl|]{2}))?\b/);
+    if (m && !/date|20\d{2}/i.test(line)) {
+      const hours = parseNumber(m[1]);
+      const mins = parseNumber(m[2]);
+      const secs = parseNumber(m[3] || 0);
+      if (isFinite(hours) && isFinite(mins) && mins < 60 && hours < 24) return { hours, mins, secs: isFinite(secs) ? Math.min(59, secs) : 0 };
+    }
+    m = line.match(/([0-9oOiIl|]+)\s*h\b/i);
+    if (m) {
+      const hours = parseNumber(m[1]);
+      if (isFinite(hours)) return { hours, mins: 0, secs: 0 };
+    }
+    return null;
+  };
+
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  for (const line of lines.filter(line => /\btime\b/i.test(line) && !/\bdate\b/i.test(line))) {
+    const parsed = parseLine(line);
+    if (parsed) return parsed;
   }
-  m = text.match(/(\d+)\s*h\b/i);
-  if (m) return { hours: parseInt(m[1], 10), mins: 0 };
+  for (const line of lines.filter(line => /\bh\b/i.test(line) && /\bm\b/i.test(line))) {
+    const parsed = parseLine(line);
+    if (parsed) return parsed;
+  }
   return null;
+}
+
+function formatDetectedTime(t) {
+  if (!t) return '';
+  return `${t.hours}h ${t.mins}m${t.secs ? ` ${t.secs}s` : ''}`;
 }
 
 function clearOcr() {
@@ -1198,7 +1233,7 @@ async function handleOcrFile(file) {
     const digitDetections = extractDetections(digitScan.data.words, { x: 0, y: 0 });
 
     setOcrLoading('Matching loot icons...');
-    const lootMatches = await detectLootMatches(img, digitDetections);
+    const lootMatches = await detectLootMatches(img, digitDetections, null, worker);
     _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
 
     $('#sessOcrLoading').classList.add('hidden');
@@ -1209,7 +1244,7 @@ async function handleOcrFile(file) {
 
     if (_ocrDetectedTime) {
       $('#sessOcrTime').classList.remove('hidden');
-      $('#sessOcrTimeText').textContent = `${_ocrDetectedTime.hours}h ${_ocrDetectedTime.mins}m`;
+      $('#sessOcrTimeText').textContent = formatDetectedTime(_ocrDetectedTime);
     } else {
       $('#sessOcrTime').classList.add('hidden');
     }
@@ -1365,7 +1400,19 @@ function loadMatchImage(src) {
   });
 }
 
-function buildSignature(source, crop = null, size = 18) {
+function slotIconCrop(slot, maxW, maxH) {
+  const padX = Math.round(slot.w * 0.13);
+  const padTop = Math.round(slot.h * 0.12);
+  const padBottom = Math.round(slot.h * 0.32);
+  return clampRect({
+    x: slot.x + padX,
+    y: slot.y + padTop,
+    w: slot.w - padX * 2,
+    h: slot.h - padTop - padBottom,
+  }, maxW, maxH);
+}
+
+function buildSignature(source, crop = null, size = 28) {
   const cv = document.createElement('canvas');
   cv.width = size;
   cv.height = size;
@@ -1376,24 +1423,32 @@ function buildSignature(source, crop = null, size = 18) {
   const sh = crop ? crop.h : source.naturalHeight || source.height;
   ctx.drawImage(source, sx, sy, sw, sh, 0, 0, size, size);
   const pixels = ctx.getImageData(0, 0, size, size).data;
-  const out = [];
+  const bins = Array(512).fill(0);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      if (x > size * 0.62 && y > size * 0.62) continue;
       const i = (y * size + x) * 4;
       if (pixels[i + 3] < 20) continue;
-      out.push(pixels[i], pixels[i + 1], pixels[i + 2]);
+      const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      if (max < 34 || (max < 70 && max - min < 18)) continue;
+      const rb = Math.min(7, r >> 5);
+      const gb = Math.min(7, g >> 5);
+      const bb = Math.min(7, b >> 5);
+      const saturationWeight = 1 + (max - min) / 255;
+      bins[(rb << 6) + (gb << 3) + bb] += saturationWeight;
     }
   }
-  return out;
+  const norm = Math.sqrt(bins.reduce((sum, n) => sum + n * n, 0)) || 1;
+  return bins.map(n => n / norm);
 }
 
 function compareSignatures(a, b) {
   const len = Math.min(a.length, b.length);
   if (len < 30) return 0;
-  let diff = 0;
-  for (let i = 0; i < len; i++) diff += Math.abs(a[i] - b[i]);
-  return Math.max(0, 1 - (diff / len) / 255);
+  let dot = 0;
+  for (let i = 0; i < len; i++) dot += a[i] * b[i];
+  return dot;
 }
 
 async function buildItemTemplates(items) {
@@ -1411,7 +1466,7 @@ async function buildItemTemplates(items) {
   return templates;
 }
 
-function quantityForSlot(slot, detections) {
+function quantityFromDetectionsForSlot(slot, detections) {
   const x0 = slot.x - 4;
   const y0 = slot.y - 4;
   const x1 = slot.x + slot.w + 8;
@@ -1424,7 +1479,53 @@ function quantityForSlot(slot, detections) {
   return best ? { qty: best.d.qty, text: best.d.text, index: best.index } : { qty: 1, text: '1', index: -1 };
 }
 
-async function detectLootMatches(img, quantityDetections, searchRect = null) {
+function makeQuantityCrop(sourceCanvas, slot) {
+  const crop = clampRect({
+    x: slot.x,
+    y: slot.y + Math.round(slot.h * 0.48),
+    w: slot.w,
+    h: Math.round(slot.h * 0.52),
+  }, sourceCanvas.width, sourceCanvas.height);
+  const scale = 6;
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(crop.w * scale));
+  cv.height = Math.max(1, Math.round(crop.h * scale));
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(sourceCanvas, crop.x, crop.y, crop.w, crop.h, 0, 0, cv.width, cv.height);
+
+  const image = ctx.getImageData(0, 0, cv.width, cv.height);
+  const data = image.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const isText = min > 92 && max - min < 95;
+    data[i] = data[i + 1] = data[i + 2] = isText ? 0 : 255;
+    data[i + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  return cv.toDataURL('image/png');
+}
+
+async function recognizeSlotQuantity(worker, sourceCanvas, slot) {
+  if (!worker) return null;
+  await setOcrMode('line-digits');
+  const url = makeQuantityCrop(sourceCanvas, slot);
+  const { data } = await worker.recognize(url);
+  const cleaned = (data.text || '').replace(/[^\d]/g, '');
+  if (!cleaned) return null;
+  const qty = parseInt(cleaned, 10);
+  return isFinite(qty) && qty > 0 ? { qty, text: cleaned, index: -1 } : null;
+}
+
+async function quantityForSlot(slot, detections, sourceCanvas, worker) {
+  const direct = await recognizeSlotQuantity(worker, sourceCanvas, slot);
+  if (direct) return direct;
+  return quantityFromDetectionsForSlot(slot, detections);
+}
+
+async function detectLootMatches(img, quantityDetections, searchRect = null, worker = null) {
   const items = getSpotItems(sessionContext.spot);
   if (!items.length) return [];
 
@@ -1441,15 +1542,15 @@ async function detectLootMatches(img, quantityDetections, searchRect = null) {
 
   const matches = [];
   for (const slot of slots) {
-    const slotSignature = buildSignature(sourceCanvas, slot);
+    const slotSignature = buildSignature(sourceCanvas, slotIconCrop(slot, sourceCanvas.width, sourceCanvas.height));
     const scored = templates
       .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
       .sort((a, b) => b.score - a.score);
     const best = scored[0];
     const second = scored[1];
-    if (!best || best.score < 0.50 || (second && best.score - second.score < 0.015)) continue;
+    if (!best || best.score < 0.34 || (second && best.score - second.score < 0.025)) continue;
 
-    const quantity = quantityForSlot(slot, quantityDetections);
+    const quantity = await quantityForSlot(slot, quantityDetections, sourceCanvas, worker);
     matches.push({
       text: quantity.text,
       qty: quantity.qty,
@@ -1486,7 +1587,7 @@ async function rescanSelection() {
     await setOcrMode('digits');
     const { data } = await worker.recognize(cropUrl);
     const digitDetections = extractDetections(data.words, { x: sel.x, y: sel.y }, SCALE);
-    const lootMatches = await detectLootMatches(img, digitDetections, sel);
+    const lootMatches = await detectLootMatches(img, digitDetections, sel, worker);
     _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
 
     $('#sessOcrLoading').classList.add('hidden');
