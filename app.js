@@ -7,8 +7,12 @@ function loadStore() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return { spots: [], items: [], classes: [], sessions: [] };
-    const p = JSON.parse(raw);
-    return sanitizeStoreData(migrateStoreData(p));
+    const storeData = sanitizeStoreData(migrateStoreData(JSON.parse(raw)));
+    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw && raw !== legacyRaw) {
+      restoreImagesFromStore(storeData, sanitizeStoreData(migrateStoreData(JSON.parse(legacyRaw))));
+    }
+    return storeData;
   } catch {
     return { spots: [], items: [], classes: [], sessions: [] };
   }
@@ -68,15 +72,48 @@ function safeText(value, maxLength = 160) {
 }
 
 function safeImageUrl(value) {
-  const raw = safeText(value, 4096);
+  const raw = String(value ?? '').replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, 2_000_000);
   if (!raw) return '';
   const normalized = normalizeImageUrl(raw);
-  if (/^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(normalized)) return normalized;
+  if (/^data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=_-]+$/i.test(normalized)) return normalized;
   try {
     const url = new URL(normalized, document.baseURI);
-    return (url.protocol === 'https:' || url.protocol === 'http:') ? url.href : '';
+    return (url.protocol === 'https:' || url.protocol === 'http:' || url.protocol === 'file:') ? url.href : '';
   } catch {
     return '';
+  }
+}
+
+function shouldRestoreImage(value) {
+  return !value || (String(value).startsWith('data:image/') && String(value).length <= 4096);
+}
+
+function restoreImagesFromStore(target, source) {
+  const sourceItemsById = new Map(source.items.map(it => [it.id, it]));
+  const sourceItemsByName = new Map(source.items.map(it => [it.name, it]));
+  for (const it of target.items) {
+    const src = sourceItemsById.get(it.id) || sourceItemsByName.get(it.name);
+    if (src?.imageUrl && shouldRestoreImage(it.imageUrl)) it.imageUrl = src.imageUrl;
+  }
+
+  const sourceSpotsById = new Map(source.spots.map(s => [s.id, s]));
+  const sourceSpotsByName = new Map(source.spots.map(s => [s.name, s]));
+  for (const spot of target.spots) {
+    const src = sourceSpotsById.get(spot.id) || sourceSpotsByName.get(spot.name);
+    if (src?.iconUrl && shouldRestoreImage(spot.iconUrl)) spot.iconUrl = src.iconUrl;
+  }
+
+  const sourceClassesById = new Map(source.classes.map(c => [c.id, c]));
+  const sourceClassesByName = new Map(source.classes.map(c => [c.name, c]));
+  for (const cls of target.classes) {
+    const src = sourceClassesById.get(cls.id) || sourceClassesByName.get(cls.name);
+    if (src?.imageUrl && shouldRestoreImage(cls.imageUrl)) cls.imageUrl = src.imageUrl;
+  }
+
+  const sourceSessionsById = new Map(source.sessions.map(s => [s.id, s]));
+  for (const session of target.sessions) {
+    const src = sourceSessionsById.get(session.id);
+    if (src?.spotIconUrl && shouldRestoreImage(session.spotIconUrl)) session.spotIconUrl = src.spotIconUrl;
   }
 }
 
@@ -134,7 +171,7 @@ function sanitizeStoreData(data) {
     .map(c => ({
       id: safeId(c.id, 'class', classIdMap, usedIds),
       name: safeText(c.name, 120) || 'Untitled class',
-      iconUrl: safeImageUrl(c.iconUrl) || null,
+      imageUrl: safeImageUrl(c.imageUrl || c.iconUrl) || null,
     })));
 
   const itemById = new Map(items.map(it => [it.id, it]));
