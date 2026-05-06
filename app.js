@@ -1242,6 +1242,7 @@ async function handleOcrFile(file) {
     alert('Please drop an image file.');
     return;
   }
+  console.log('[OCR] handleOcrFile build=v5');
   setOcrLoading('Loading scanner… (first run can take 5–10 s)');
   try {
     const dataUrl = await fileToDataUrl(file);
