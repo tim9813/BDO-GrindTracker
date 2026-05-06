@@ -1528,16 +1528,23 @@ function compareSignatures(a, b) {
 
 async function buildItemTemplates(items) {
   const templates = [];
+  const failures = [];
   for (const item of items) {
     const src = item.imageUrl || item.iconUrl;
-    if (!src) continue;
+    if (!src) { failures.push({ item, reason: 'no-image-url' }); continue; }
     try {
       const img = await loadMatchImage(src);
       templates.push({ item, signature: buildSignature(img) });
-    } catch {
-      // Keep OCR/manual mapping available for images that cannot be sampled.
+    } catch (err) {
+      // Likely CORS-tainted canvas or 404. The icon must serve
+      // Access-Control-Allow-Origin for getImageData() to work.
+      failures.push({ item, reason: err?.message || 'load-or-taint-error' });
     }
   }
+  if (failures.length) {
+    console.warn('[OCR] Could not build template signatures for', failures.length, 'item(s):', failures);
+  }
+  console.info('[OCR] templates built:', templates.length, '/ items linked to spot:', items.length);
   return templates;
 }
 
