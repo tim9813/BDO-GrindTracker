@@ -1374,8 +1374,8 @@ function detectLootSlotsFromCanvas(sourceCanvas, searchRect = null) {
   const h = sourceCanvas.height;
   const xStart = searchRect ? Math.max(0, Math.floor(searchRect.x)) : 0;
   const xEnd = searchRect ? Math.min(w, Math.ceil(searchRect.x + searchRect.w)) : w;
-  const yStart = searchRect ? Math.max(0, Math.floor(searchRect.y)) : Math.floor(h * 0.42);
-  const yEnd = searchRect ? Math.min(h, Math.ceil(searchRect.y + searchRect.h)) : Math.floor(h * 0.78);
+  const yStart = searchRect ? Math.max(0, Math.floor(searchRect.y)) : Math.floor(h * 0.20);
+  const yEnd = searchRect ? Math.min(h, Math.ceil(searchRect.y + searchRect.h)) : Math.floor(h * 0.85);
   const scanW = Math.max(1, xEnd - xStart);
   const scanH = Math.max(1, yEnd - yStart);
   const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true });
@@ -1391,8 +1391,10 @@ function detectLootSlotsFromCanvas(sourceCanvas, searchRect = null) {
 
   const rowThreshold = Math.max(8, Math.floor(scanW * 0.035));
   const rowGroups = scoreGroups(rowScores, rowThreshold, yStart)
-    .filter(g => g.end - g.start >= 12 && g.end - g.start <= Math.max(90, h * 0.35));
+    .filter(g => g.end - g.start >= 12 && g.end - g.start <= Math.max(120, h * 0.45));
   const row = rowGroups.sort((a, b) => b.sum - a.sum)[0];
+  console.info('[OCR] slot search: imageSize=', w, 'x', h, 'searchY=', yStart, '-', yEnd,
+    'rowGroups=', rowGroups.length, 'pickedRow=', row);
   if (!row) return [];
 
   const rowPad = Math.max(4, Math.round((row.end - row.start) * 0.12));
@@ -1417,6 +1419,7 @@ function detectLootSlotsFromCanvas(sourceCanvas, searchRect = null) {
     });
 
   const rowCenter = (y0 + y1) / 2;
+  console.info('[OCR] slot columns found:', cols.length);
   return cols.map(g => {
     const width = g.end - g.start + 1;
     const size = Math.max(22, Math.min(58, Math.max(rowH, width + 10)));
