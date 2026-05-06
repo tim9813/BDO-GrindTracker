@@ -1953,7 +1953,8 @@ function bindOcrZone() {
   const fileInput = $('#sessOcrFile');
   if (!zone || !fileInput) return;
 
-  zone.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') fileInput.click(); });
+  // The drop zone is a <label>, which natively opens the bound <input type=file>.
+  // Don't add another click → fileInput.click() handler or the picker opens twice.
   fileInput.addEventListener('change', e => {
     const f = e.target.files?.[0];
     if (f) handleOcrFile(f);
