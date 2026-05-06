@@ -1698,6 +1698,23 @@ async function quantityForSlot(slot, detections, sourceCanvas, worker) {
   return fallback;
 }
 
+function fallbackSplitSelection(searchRect, count = 9) {
+  const slots = [];
+  const each = searchRect.w / count;
+  const size = Math.min(each, searchRect.h);
+  const cy = searchRect.y + searchRect.h / 2;
+  for (let i = 0; i < count; i++) {
+    const cx = searchRect.x + each * (i + 0.5);
+    slots.push({
+      x: Math.round(cx - size / 2),
+      y: Math.round(cy - size / 2),
+      w: Math.round(size),
+      h: Math.round(size),
+    });
+  }
+  return slots;
+}
+
 async function detectLootMatches(img, quantityDetections, searchRect = null, worker = null) {
   const items = getSpotItems(sessionContext.spot);
 
@@ -1706,7 +1723,12 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
   sourceCanvas.height = img.naturalHeight;
   sourceCanvas.getContext('2d').drawImage(img, 0, 0);
 
-  const slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
+  let slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
+  if (!slots.length && searchRect) {
+    const guessCount = Math.max(8, Math.min(10, items.length || 9));
+    slots = fallbackSplitSelection(searchRect, guessCount);
+    console.log('[OCR] auto-detect failed; falling back to equal-split into', slots.length, 'cells');
+  }
   if (!slots.length) return [];
 
   const templates = items.length ? await buildItemTemplates(items) : [];
@@ -1775,7 +1797,15 @@ async function rescanSelection() {
 
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrResults').classList.remove('hidden');
-    if (_ocrDetections.length === 0) alert('No numbers found in that selection.');
+    if (_ocrDetections.length === 0) {
+      // Last-resort: surface fallback cells so user can fill in manually.
+      _ocrDetections = fallbackSplitSelection(sel, 9).map(s => ({
+        text: '0', qty: 0,
+        bbox: { x0: s.x, y0: s.y, x1: s.x + s.w, y1: s.y + s.h },
+        itemId: null, matchedName: null, score: 0,
+        source: 'manual-split',
+      }));
+    }
     renderOcrList();
     drawOcrOverlay();
   } catch (e) {
