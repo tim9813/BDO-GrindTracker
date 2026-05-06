@@ -1642,7 +1642,6 @@ async function quantityForSlot(slot, detections, sourceCanvas, worker) {
 
 async function detectLootMatches(img, quantityDetections, searchRect = null, worker = null) {
   const items = getSpotItems(sessionContext.spot);
-  if (!items.length) return [];
 
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = img.naturalWidth;
@@ -1652,28 +1651,39 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
   const slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
   if (!slots.length) return [];
 
-  const templates = await buildItemTemplates(items);
-  if (!templates.length) return [];
+  const templates = items.length ? await buildItemTemplates(items) : [];
+  const usedItemIds = new Set();
 
   const matches = [];
   for (const slot of slots) {
-    const slotSignature = buildSignature(sourceCanvas, slotIconCrop(slot, sourceCanvas.width, sourceCanvas.height));
-    const scored = templates
-      .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
-      .sort((a, b) => b.score - a.score);
-    const best = scored[0];
-    const second = scored[1];
-    if (!best || best.score < 0.42 || (second && best.score - second.score < 0.03)) continue;
+    let matchedItem = null;
+    let matchScore = 0;
+    if (templates.length) {
+      const slotSignature = buildSignature(sourceCanvas, slotIconCrop(slot, sourceCanvas.width, sourceCanvas.height));
+      const scored = templates
+        .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
+        .filter(s => !usedItemIds.has(s.item.id))
+        .sort((a, b) => b.score - a.score);
+      const best = scored[0];
+      const second = scored[1];
+      const acceptStrict = best && best.score >= 0.42 && (!second || best.score - second.score >= 0.03);
+      const acceptLoose  = best && best.score >= 0.32;
+      if (acceptStrict || acceptLoose) {
+        matchedItem = best.item;
+        matchScore = best.score;
+        usedItemIds.add(best.item.id);
+      }
+    }
 
     const quantity = await quantityForSlot(slot, quantityDetections, sourceCanvas, worker);
     matches.push({
       text: quantity.text,
       qty: quantity.qty,
       bbox: { x0: slot.x, y0: slot.y, x1: slot.x + slot.w, y1: slot.y + slot.h },
-      itemId: best.item.id,
-      matchedName: best.item.name,
-      score: best.score,
-      source: 'item-match',
+      itemId: matchedItem ? matchedItem.id : null,
+      matchedName: matchedItem ? matchedItem.name : null,
+      score: matchScore,
+      source: matchedItem ? 'item-match' : 'slot-detection',
     });
   }
 
