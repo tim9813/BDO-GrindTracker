@@ -1242,6 +1242,7 @@ async function handleOcrFile(file) {
     alert('Please drop an image file.');
     return;
   }
+  console.log('[OCR] handleOcrFile build=v5');
   setOcrLoading('Loading scanner… (first run can take 5–10 s)');
   try {
     const dataUrl = await fileToDataUrl(file);
@@ -1374,58 +1375,108 @@ function detectLootSlotsFromCanvas(sourceCanvas, searchRect = null) {
   const h = sourceCanvas.height;
   const xStart = searchRect ? Math.max(0, Math.floor(searchRect.x)) : 0;
   const xEnd = searchRect ? Math.min(w, Math.ceil(searchRect.x + searchRect.w)) : w;
-  const yStart = searchRect ? Math.max(0, Math.floor(searchRect.y)) : Math.floor(h * 0.42);
-  const yEnd = searchRect ? Math.min(h, Math.ceil(searchRect.y + searchRect.h)) : Math.floor(h * 0.78);
+  const yStart = searchRect ? Math.max(0, Math.floor(searchRect.y)) : Math.floor(h * 0.10);
+  const yEnd = searchRect ? Math.min(h, Math.ceil(searchRect.y + searchRect.h)) : Math.floor(h * 0.95);
   const scanW = Math.max(1, xEnd - xStart);
   const scanH = Math.max(1, yEnd - yStart);
   const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true });
   const data = ctx.getImageData(xStart, yStart, scanW, scanH).data;
-  const rowScores = Array(scanH).fill(0);
 
+  // Saturation-based row score: only colorful pixels count, so white text rows
+  // (saturation ~ 0) don't compete with the colorful icon row.
+  const rowSat = new Float32Array(scanH);
   for (let y = 0; y < scanH; y++) {
+    let sum = 0;
     for (let x = 0; x < scanW; x++) {
       const i = (y * scanW + x) * 4;
-      if (contentPixel(data[i], data[i + 1], data[i + 2], data[i + 3])) rowScores[y]++;
+      if (data[i + 3] < 20) continue;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const sat = max - min;
+      if (sat > 35 && max > 50) sum += sat;
     }
+    rowSat[y] = sum;
   }
 
-  const rowThreshold = Math.max(8, Math.floor(scanW * 0.035));
-  const rowGroups = scoreGroups(rowScores, rowThreshold, yStart)
-    .filter(g => g.end - g.start >= 12 && g.end - g.start <= Math.max(90, h * 0.35));
-  const row = rowGroups.sort((a, b) => b.sum - a.sum)[0];
-  if (!row) return [];
+  // Find the contiguous band with highest saturation; this is the icon row.
+  const peakSat = Math.max(...rowSat);
+  if (peakSat <= 0) {
+    console.log('[OCR] slot search: no saturated pixels found in', xStart, yStart, scanW, scanH);
+    return [];
+  }
+  const rowThresh = peakSat * 0.30;
+  let bestStart = -1, bestEnd = -1, bestSum = 0;
+  let curStart = -1, curSum = 0;
+  for (let y = 0; y <= scanH; y++) {
+    const active = y < scanH && rowSat[y] >= rowThresh;
+    if (active && curStart < 0) { curStart = y; curSum = 0; }
+    if (active) curSum += rowSat[y];
+    if ((!active || y === scanH) && curStart >= 0) {
+      if (curSum > bestSum) { bestSum = curSum; bestStart = curStart; bestEnd = y - 1; }
+      curStart = -1;
+    }
+  }
+  console.log('[OCR] slot row band:', bestStart, '-', bestEnd, 'peakSat=', peakSat.toFixed(0));
+  if (bestStart < 0 || bestEnd - bestStart < 10) return [];
 
-  const rowPad = Math.max(4, Math.round((row.end - row.start) * 0.12));
-  const y0 = Math.max(yStart, row.start - rowPad);
-  const y1 = Math.min(yEnd, row.end + rowPad);
+  const rowPad = Math.max(4, Math.round((bestEnd - bestStart) * 0.20));
+  const y0 = Math.max(0, bestStart - rowPad) + yStart;
+  const y1 = Math.min(scanH - 1, bestEnd + rowPad) + yStart;
   const rowH = y1 - y0 + 1;
   const rowData = ctx.getImageData(xStart, y0, scanW, rowH).data;
-  const colScores = Array(scanW).fill(0);
 
+  // Column score: same saturation gating, summed across the band height.
+  const colSat = new Float32Array(scanW);
   for (let y = 0; y < rowH; y++) {
     for (let x = 0; x < scanW; x++) {
       const i = (y * scanW + x) * 4;
-      if (contentPixel(rowData[i], rowData[i + 1], rowData[i + 2], rowData[i + 3])) colScores[x]++;
+      if (rowData[i + 3] < 20) continue;
+      const r = rowData[i], g = rowData[i + 1], b = rowData[i + 2];
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const sat = max - min;
+      if (sat > 35 && max > 50) colSat[x] += sat;
     }
   }
 
-  const colThreshold = Math.max(3, Math.floor(rowH * 0.12));
-  const cols = mergeCloseGroups(scoreGroups(colScores, colThreshold, xStart), 4)
-    .filter(g => {
-      const width = g.end - g.start + 1;
-      return width >= 10 && width <= Math.max(64, rowH * 1.8);
-    });
+  const peakCol = Math.max(...colSat);
+  const colThresh = Math.max(peakCol * 0.18, rowH * 6);
+  const colGroups = [];
+  let cs = -1, csum = 0;
+  for (let x = 0; x <= scanW; x++) {
+    const on = x < scanW && colSat[x] >= colThresh;
+    if (on && cs < 0) { cs = x; csum = 0; }
+    if (on) csum += colSat[x];
+    if ((!on || x === scanW) && cs >= 0) {
+      colGroups.push({ start: cs + xStart, end: x - 1 + xStart, sum: csum });
+      cs = -1;
+    }
+  }
+  // Merge groups that are within ~25% of estimated icon width, then split very
+  // wide groups into equal cells (icons are roughly square, ~rowH wide).
+  const iconW = Math.max(20, rowH * 0.9);
+  const merged = mergeCloseGroups(colGroups, Math.round(iconW * 0.18));
+  const cells = [];
+  for (const g of merged) {
+    const width = g.end - g.start + 1;
+    if (width < iconW * 0.4) continue;
+    const count = Math.max(1, Math.round(width / iconW));
+    const each = width / count;
+    for (let k = 0; k < count; k++) {
+      cells.push({ start: g.start + k * each, end: g.start + (k + 1) * each - 1 });
+    }
+  }
 
   const rowCenter = (y0 + y1) / 2;
-  return cols.map(g => {
-    const width = g.end - g.start + 1;
-    const size = Math.max(22, Math.min(58, Math.max(rowH, width + 10)));
-    const center = (g.start + g.end) / 2;
+  console.log('[OCR] slot columns: groups=', merged.length, 'cells=', cells.length, 'iconW≈', iconW.toFixed(0));
+  return cells.map(c => {
+    const width = c.end - c.start + 1;
+    const size = Math.round(Math.max(22, Math.min(rowH * 1.1, Math.max(width, rowH))));
+    const center = (c.start + c.end) / 2;
     return clampRect({
       x: Math.round(center - size / 2),
       y: Math.round(rowCenter - size / 2),
-      w: Math.round(size),
-      h: Math.round(size),
+      w: size,
+      h: size,
     }, w, h);
   });
 }
@@ -1528,16 +1579,23 @@ function compareSignatures(a, b) {
 
 async function buildItemTemplates(items) {
   const templates = [];
+  const failures = [];
   for (const item of items) {
     const src = item.imageUrl || item.iconUrl;
-    if (!src) continue;
+    if (!src) { failures.push({ item, reason: 'no-image-url' }); continue; }
     try {
       const img = await loadMatchImage(src);
       templates.push({ item, signature: buildSignature(img) });
-    } catch {
-      // Keep OCR/manual mapping available for images that cannot be sampled.
+    } catch (err) {
+      // Likely CORS-tainted canvas or 404. The icon must serve
+      // Access-Control-Allow-Origin for getImageData() to work.
+      failures.push({ item, reason: err?.message || 'load-or-taint-error' });
     }
   }
+  if (failures.length) {
+    console.warn('[OCR] Could not build template signatures for', failures.length, 'item(s):', failures);
+  }
+  console.log('[OCR] templates built:', templates.length, '/ items linked to spot:', items.length);
   return templates;
 }
 
@@ -1640,40 +1698,72 @@ async function quantityForSlot(slot, detections, sourceCanvas, worker) {
   return fallback;
 }
 
+function fallbackSplitSelection(searchRect, count = 9) {
+  const slots = [];
+  const each = searchRect.w / count;
+  const size = Math.min(each, searchRect.h);
+  const cy = searchRect.y + searchRect.h / 2;
+  for (let i = 0; i < count; i++) {
+    const cx = searchRect.x + each * (i + 0.5);
+    slots.push({
+      x: Math.round(cx - size / 2),
+      y: Math.round(cy - size / 2),
+      w: Math.round(size),
+      h: Math.round(size),
+    });
+  }
+  return slots;
+}
+
 async function detectLootMatches(img, quantityDetections, searchRect = null, worker = null) {
   const items = getSpotItems(sessionContext.spot);
-  if (!items.length) return [];
 
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = img.naturalWidth;
   sourceCanvas.height = img.naturalHeight;
   sourceCanvas.getContext('2d').drawImage(img, 0, 0);
 
-  const slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
+  let slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
+  if (!slots.length && searchRect) {
+    const guessCount = Math.max(8, Math.min(10, items.length || 9));
+    slots = fallbackSplitSelection(searchRect, guessCount);
+    console.log('[OCR] auto-detect failed; falling back to equal-split into', slots.length, 'cells');
+  }
   if (!slots.length) return [];
 
-  const templates = await buildItemTemplates(items);
-  if (!templates.length) return [];
+  const templates = items.length ? await buildItemTemplates(items) : [];
+  const usedItemIds = new Set();
 
   const matches = [];
   for (const slot of slots) {
-    const slotSignature = buildSignature(sourceCanvas, slotIconCrop(slot, sourceCanvas.width, sourceCanvas.height));
-    const scored = templates
-      .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
-      .sort((a, b) => b.score - a.score);
-    const best = scored[0];
-    const second = scored[1];
-    if (!best || best.score < 0.42 || (second && best.score - second.score < 0.03)) continue;
+    let matchedItem = null;
+    let matchScore = 0;
+    if (templates.length) {
+      const slotSignature = buildSignature(sourceCanvas, slotIconCrop(slot, sourceCanvas.width, sourceCanvas.height));
+      const scored = templates
+        .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
+        .filter(s => !usedItemIds.has(s.item.id))
+        .sort((a, b) => b.score - a.score);
+      const best = scored[0];
+      const second = scored[1];
+      const acceptStrict = best && best.score >= 0.42 && (!second || best.score - second.score >= 0.03);
+      const acceptLoose  = best && best.score >= 0.32;
+      if (acceptStrict || acceptLoose) {
+        matchedItem = best.item;
+        matchScore = best.score;
+        usedItemIds.add(best.item.id);
+      }
+    }
 
     const quantity = await quantityForSlot(slot, quantityDetections, sourceCanvas, worker);
     matches.push({
       text: quantity.text,
       qty: quantity.qty,
       bbox: { x0: slot.x, y0: slot.y, x1: slot.x + slot.w, y1: slot.y + slot.h },
-      itemId: best.item.id,
-      matchedName: best.item.name,
-      score: best.score,
-      source: 'item-match',
+      itemId: matchedItem ? matchedItem.id : null,
+      matchedName: matchedItem ? matchedItem.name : null,
+      score: matchScore,
+      source: matchedItem ? 'item-match' : 'slot-detection',
     });
   }
 
@@ -1707,7 +1797,15 @@ async function rescanSelection() {
 
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrResults').classList.remove('hidden');
-    if (_ocrDetections.length === 0) alert('No numbers found in that selection.');
+    if (_ocrDetections.length === 0) {
+      // Last-resort: surface fallback cells so user can fill in manually.
+      _ocrDetections = fallbackSplitSelection(sel, 9).map(s => ({
+        text: '0', qty: 0,
+        bbox: { x0: s.x, y0: s.y, x1: s.x + s.w, y1: s.y + s.h },
+        itemId: null, matchedName: null, score: 0,
+        source: 'manual-split',
+      }));
+    }
     renderOcrList();
     drawOcrOverlay();
   } catch (e) {
@@ -1885,7 +1983,8 @@ function bindOcrZone() {
   const fileInput = $('#sessOcrFile');
   if (!zone || !fileInput) return;
 
-  zone.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') fileInput.click(); });
+  // The drop zone is a <label>, which natively opens the bound <input type=file>.
+  // Don't add another click → fileInput.click() handler or the picker opens twice.
   fileInput.addEventListener('change', e => {
     const f = e.target.files?.[0];
     if (f) handleOcrFile(f);
