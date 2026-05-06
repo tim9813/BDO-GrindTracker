@@ -256,6 +256,23 @@ function avatarHTML(thing, size = 32, rounded = 'rounded-md') {
   return fallback;
 }
 
+function itemIconHTML(thing, size = 52, rounded = 'rounded-md') {
+  const px = `${size}px`;
+  const letter = (thing.name?.[0] || '?').toUpperCase();
+  const fallback = `<div class="${rounded} flex items-center justify-center text-xs font-bold text-white shrink-0 bg-panel2 border border-border" style="width:${px};height:${px};background:${colorFor(thing.name || '')}">${escapeHtml(letter)}</div>`;
+  const url = normalizeImageUrl(thing.iconUrl || thing.imageUrl);
+  if (url) {
+    const onerr = escapeAttr(`this.outerHTML=${JSON.stringify(fallback)}`);
+    return `
+      <span class="${rounded} inline-flex items-center justify-center overflow-hidden bg-panel2 border border-border shrink-0" style="width:${px};height:${px}">
+        <img src="${escapeAttr(url)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+          class="w-full h-full object-contain scale-[1.10]" onerror="${onerr}">
+      </span>
+    `;
+  }
+  return fallback;
+}
+
 function fmtSilver(n) {
   if (!isFinite(n) || n === 0) return '0';
   if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -695,7 +712,7 @@ function renderItemList() {
         ${avatarHTML(it, 36)}
         <div class="min-w-0">
           <div class="text-sm font-medium truncate">${escapeHtml(it.name)}</div>
-          <div class="text-xs text-mute2">${fmtSilver(it.price || 0)}${it.taxable ? ' · taxable' : ''} · used by ${usedBy} spot${usedBy === 1 ? '' : 's'}</div>
+          <div class="text-xs text-mute2">${fmtSilver(it.price || 0)} · used by ${usedBy} spot${usedBy === 1 ? '' : 's'}</div>
         </div>
         <button class="text-xs text-mute hover:text-white px-2 py-1" data-edit-item="${it.id}">Edit</button>
         <button class="text-xs text-red-400 hover:text-red-300 px-2 py-1" data-del-item="${it.id}">Delete</button>
@@ -714,12 +731,10 @@ function openItemEditor(id = null) {
     $('#itemName').value  = it?.name || '';
     $('#itemImage').value = it?.imageUrl || '';
     $('#itemPrice').value = it?.price || 0;
-    $('#itemTax').checked = it ? !!it.taxable : true;
   } else {
     $('#itemName').value = '';
     $('#itemImage').value = '';
     $('#itemPrice').value = 0;
-    $('#itemTax').checked = true;
   }
   $('#itemName').focus();
 }
@@ -732,7 +747,7 @@ function saveItem() {
     name,
     imageUrl: $('#itemImage').value.trim(),
     price: clampNumber($('#itemPrice').value),
-    taxable: $('#itemTax').checked,
+    taxable: false,
   };
   if (editingItemId) {
     const it = store.items.find(x => x.id === editingItemId);
@@ -943,8 +958,6 @@ function openSessionForm(spot) {
   $('#sessHours').value = 1;
   $('#sessMins').value = 0;
   $('#sessSecs').value = 0;
-  $('#sessDropRate').value = 100;
-  $('#sessApplyTax').checked = true;
   $('#sessNotes').value = '';
 
   renderLootGrid();
@@ -977,7 +990,7 @@ function renderLootGrid() {
       ${avatarHTML(it, 36)}
       <div class="flex-1 min-w-0">
         <div class="text-xs font-medium truncate" title="${escapeAttr(it.name)}">${escapeHtml(it.name)}</div>
-        <div class="text-[10px] text-mute2">${fmtSilver(it.price || 0)}${it.taxable ? ' · taxed' : ''}</div>
+        <div class="text-[10px] text-mute2">${fmtSilver(it.price || 0)}</div>
       </div>
       <input type="number" min="0" step="1" value="0" data-loot="${it.id}"
         class="w-16 bg-bg border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:border-accent">
@@ -1027,13 +1040,10 @@ function getSessionTimeInput() {
 
 function calcSession() {
   const items = getSpotItems(sessionContext.spot);
-  const applyTax = $('#sessApplyTax').checked;
   let total = 0;
   for (const it of items) {
     const qty = Math.floor(clampNumber(sessionContext.lootQty[it.id]));
-    let revenue = clampNumber(it.price) * qty;
-    if (applyTax && it.taxable) revenue *= (1 - TAX);
-    total += revenue;
+    total += clampNumber(it.price) * qty;
   }
   const { totalHours } = getSessionTimeInput();
   const perHour = totalHours > 0 ? total / totalHours : 0;
@@ -1045,7 +1055,7 @@ function recalcTotals() {
   $('#sessTotalSilver').textContent = fmtSilver(total);
   $('#sessSilverHr').textContent = fmtSilver(perHour);
 }
-['sessHours','sessMins','sessSecs','sessDropRate','sessApplyTax'].forEach(id => {
+['sessHours','sessMins','sessSecs'].forEach(id => {
   $('#' + id)?.addEventListener('input', recalcTotals);
   $('#' + id)?.addEventListener('change', recalcTotals);
 });
@@ -1064,8 +1074,8 @@ $('#sessSaveBtn')?.addEventListener('click', () => {
     mins,
     secs,
     totalHours,
-    dropRatePct: clampNumber($('#sessDropRate').value),
-    applyTax: $('#sessApplyTax').checked,
+    dropRatePct: 100,
+    applyTax: false,
     loot: { ...sessionContext.lootQty },
     notes: $('#sessNotes').value.trim(),
     totalSilver: total,
@@ -1276,6 +1286,7 @@ async function handleOcrFile(file) {
     setOcrLoading('Matching loot icons...');
     const lootMatches = await detectLootMatches(img, digitDetections, null, worker);
     _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
+    _ocrDetections = _ocrDetections.filter(d => d.itemId);
 
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrPreview').src = dataUrl;
@@ -1551,7 +1562,7 @@ function quantityFromDetectionsForSlot(slot, detections) {
     .filter(c => c.cx >= x0 && c.cx <= x1 && c.cy >= y0 && c.cy <= y1)
     .sort((a, b) => (b.cy - a.cy) || (b.cx - a.cx));
   const best = candidates[0];
-  return best ? { qty: best.d.qty, text: best.d.text, index: best.index } : { qty: 1, text: '1', index: -1 };
+  return best ? { qty: best.d.qty, text: best.d.text, index: best.index, source: 'full-scan' } : null;
 }
 
 function makeQuantityCrop(sourceCanvas, slot, mode = 'text') {
@@ -1603,17 +1614,31 @@ function parseQuantityText(text) {
 
 function chooseQuantityCandidate(candidates, fallback) {
   const usable = candidates.filter(Boolean);
-  if (fallback && fallback.qty > 1) usable.push({ ...fallback, source: 'full-scan' });
-  if (!usable.length) return fallback || { qty: 1, text: '1', index: -1 };
-  return usable.sort((a, b) => {
-    const aText = String(a.text);
-    const bText = String(b.text);
-    const suspicious = value => value.length >= 5 && /^(?:19|89|99)/.test(value);
-    if (suspicious(aText) !== suspicious(bText)) return suspicious(aText) ? 1 : -1;
-    const lenDiff = Math.min(bText.length, 5) - Math.min(aText.length, 5);
-    if (lenDiff) return lenDiff;
-    return (b.confidence || 0) - (a.confidence || 0);
-  })[0];
+  if (fallback && fallback.qty > 1) usable.push(fallback);
+  if (!usable.length) return null;
+
+  const groups = new Map();
+  for (const c of usable) {
+    const key = String(c.qty);
+    const confidence = (Number(c.confidence) || (c.source === 'full-scan' ? 55 : 0)) / 100;
+    const cur = groups.get(key) || { qty: c.qty, text: key, count: 0, score: 0, best: c };
+    cur.count++;
+    cur.score += confidence;
+    const bestConfidence = (Number(cur.best.confidence) || (cur.best.source === 'full-scan' ? 55 : 0)) / 100;
+    if (confidence > bestConfidence) cur.best = c;
+    groups.set(key, cur);
+  }
+
+  const ranked = [...groups.values()].sort((a, b) =>
+    b.count - a.count || b.score - a.score || String(b.text).length - String(a.text).length
+  );
+  const top = ranked[0];
+  if (!top) return null;
+  const avg = top.score / top.count;
+  const bestConfidence = (Number(top.best.confidence) || (top.best.source === 'full-scan' ? 55 : 0)) / 100;
+  if (top.count >= 2 && avg >= 0.50) return top.best;
+  if (bestConfidence >= 0.88) return top.best;
+  return null;
 }
 
 async function recognizeSlotQuantity(worker, sourceCanvas, slot, fallback = null) {
@@ -1635,9 +1660,7 @@ async function recognizeSlotQuantity(worker, sourceCanvas, slot, fallback = null
 
 async function quantityForSlot(slot, detections, sourceCanvas, worker) {
   const fallback = quantityFromDetectionsForSlot(slot, detections);
-  const direct = await recognizeSlotQuantity(worker, sourceCanvas, slot, fallback);
-  if (direct) return direct;
-  return fallback;
+  return await recognizeSlotQuantity(worker, sourceCanvas, slot, fallback);
 }
 
 async function detectLootMatches(img, quantityDetections, searchRect = null, worker = null) {
@@ -1663,12 +1686,12 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
       .sort((a, b) => b.score - a.score);
     const best = scored[0];
     const second = scored[1];
-    if (!best || best.score < 0.42 || (second && best.score - second.score < 0.03)) continue;
+    if (!best || best.score < 0.58 || (second && best.score - second.score < 0.08)) continue;
 
     const quantity = await quantityForSlot(slot, quantityDetections, sourceCanvas, worker);
     matches.push({
-      text: quantity.text,
-      qty: quantity.qty,
+      text: quantity?.text || '',
+      qty: quantity?.qty || 0,
       bbox: { x0: slot.x, y0: slot.y, x1: slot.x + slot.w, y1: slot.y + slot.h },
       itemId: best.item.id,
       matchedName: best.item.name,
@@ -1704,6 +1727,7 @@ async function rescanSelection() {
     const digitDetections = extractDetections(data.words, { x: sel.x, y: sel.y }, SCALE);
     const lootMatches = await detectLootMatches(img, digitDetections, sel, worker);
     _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
+    _ocrDetections = _ocrDetections.filter(d => d.itemId);
 
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrResults').classList.remove('hidden');
@@ -1726,25 +1750,25 @@ function renderOcrList() {
     return;
   }
   wrap.innerHTML = _ocrDetections.map((d, i) => {
+    const mappedItem = d.itemId ? items.find(it => it.id === d.itemId) : null;
+    const preview = mappedItem
+      ? itemIconHTML(mappedItem, 52)
+      : `<div class="w-[52px] h-[52px] rounded-md bg-bg border border-border"></div>`;
     const itemOptionsRendered = items.map(it =>
       `<option value="${it.id}" ${d.itemId === it.id ? 'selected' : ''}>${escapeHtml(it.name)}</option>`
     ).join('');
-    const matchMeta = d.source === 'item-match'
-      ? `<div class="text-[10px] text-mute2 mt-0.5 truncate">Matched ${escapeHtml(d.matchedName || '')} (${Math.round((d.score || 0) * 100)}%)</div>`
-      : '';
+    const qtyValue = d.qty > 0 ? String(d.qty) : '';
     return `
-      <div class="grid grid-cols-[auto_1fr_auto] gap-3 items-center bg-panel border border-border rounded-md px-3 py-1.5">
-        <input type="number" min="0" step="1" value="${escapeAttr(d.qty)}" data-ocr-qty="${i}"
+      <div class="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-center bg-panel border border-border rounded-md px-3 py-2">
+        ${preview}
+        <input type="number" min="0" step="1" placeholder="Qty" value="${escapeAttr(qtyValue)}" data-ocr-qty="${i}"
           class="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-sm font-mono tabular-nums focus:outline-none focus:border-accent">
-        <div class="min-w-0">
         <select data-ocr-pick="${i}" class="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent">
           <option value="">— Skip —</option>
           <option value="__hours__" ${d.itemId === '__hours__' ? 'selected' : ''}>→ Hours</option>
           <option value="__mins__"  ${d.itemId === '__mins__'  ? 'selected' : ''}>→ Minutes</option>
           ${items.length ? `<optgroup label="Loot items">${itemOptionsRendered}</optgroup>` : ''}
         </select>
-        ${matchMeta}
-        </div>
         <button data-ocr-remove="${i}" class="text-red-400 hover:text-red-300 text-xs px-2" title="Remove">×</button>
       </div>
     `;
@@ -1752,15 +1776,19 @@ function renderOcrList() {
 
   $$('[data-ocr-pick]', wrap).forEach(s => s.addEventListener('change', () => {
     _ocrDetections[Number(s.dataset.ocrPick)].itemId = s.value || null;
+    _ocrDetections = _ocrDetections.filter(d => d.itemId);
+    renderOcrList();
     drawOcrOverlay();
     updateOcrSummary();
   }));
   $$('[data-ocr-qty]', wrap).forEach(inp => inp.addEventListener('input', () => {
     const i = Number(inp.dataset.ocrQty);
-    const qty = Math.floor(clampNumber(inp.value));
+    const raw = inp.value.trim();
+    const qty = raw ? Math.floor(clampNumber(raw)) : 0;
     _ocrDetections[i].qty = qty;
-    _ocrDetections[i].text = String(qty);
+    _ocrDetections[i].text = raw;
     drawOcrOverlay();
+    updateOcrSummary();
   }));
   $$('[data-ocr-remove]', wrap).forEach(b => b.addEventListener('click', () => {
     _ocrDetections.splice(Number(b.dataset.ocrRemove), 1);
@@ -1772,7 +1800,8 @@ function renderOcrList() {
 
 function updateOcrSummary() {
   const mapped = _ocrDetections.filter(d => d.itemId).length;
-  $('#sessOcrSummary').textContent = `${mapped} of ${_ocrDetections.length} mapped`;
+  const filled = _ocrDetections.filter(d => d.itemId && d.qty > 0).length;
+  $('#sessOcrSummary').textContent = `${filled} filled, ${mapped} mapped of ${_ocrDetections.length} rows`;
 }
 
 function drawOcrOverlay(extra) {
@@ -1830,13 +1859,14 @@ function drawOcrOverlay(extra) {
 
 function applyOcrToLoot() {
   const mapped = _ocrDetections.filter(d => d.itemId);
-  if (!mapped.length && !_ocrDetectedTime) {
-    alert('Nothing to apply — map at least one number to an item, or use the time fill.');
+  if (!mapped.some(d => d.qty > 0) && !_ocrDetectedTime) {
+    alert('Nothing to apply — enter at least one quantity, or use the time fill.');
     return;
   }
   const additions = {};
   let hours = null, mins = null;
   for (const d of mapped) {
+    if (d.qty <= 0) continue;
     if (d.itemId === '__hours__') hours = d.qty;
     else if (d.itemId === '__mins__') mins = Math.min(59, d.qty);
     else additions[d.itemId] = (additions[d.itemId] || 0) + d.qty;
@@ -2048,8 +2078,6 @@ function openSessionDetail(id) {
   const cls = s.classId ? store.classes.find(c => c.id === s.classId) : null;
   $('#sessDetailClass').textContent = cls ? cls.name : (s.classId ? '(deleted class)' : 'None');
   $('#sessDetailTime').textContent = fmtSessionDuration(s.hours, s.mins, s.secs);
-  $('#sessDetailDropRate').textContent = `${s.dropRatePct ?? 100}%`;
-  $('#sessDetailTax').textContent = s.applyTax ? '15.5% applied' : 'Not applied';
 
   const lootEntries = Object.entries(s.loot || {}).filter(([, q]) => q > 0);
   if (lootEntries.length) {
@@ -2057,8 +2085,7 @@ function openSessionDetail(id) {
       const it = store.items.find(i => i.id === itemId);
       const name = it?.name || '(deleted item)';
       const price = it?.price || 0;
-      const taxed = it?.taxable && s.applyTax;
-      const lineTotal = qty * price * (taxed ? 0.845 : 1);
+      const lineTotal = qty * price;
       return `
         <div class="flex items-center gap-2 text-xs">
           ${it ? avatarHTML(it, 22) : `<div class="w-[22px] h-[22px] rounded bg-panel"></div>`}
