@@ -1145,7 +1145,6 @@ let _tesseractScriptPromise = null;
 let _ocrWorker = null;
 let _ocrDetections = [];   // [{ text, qty, bbox, itemId }]
 let _ocrLocalDetections = [];
-let _ocrSlots = [];
 let _ocrImgNaturalSize = { w: 0, h: 0 };
 let _ocrImageDataUrl = null;
 let _ocrSelection = null;  // { x, y, w, h } in natural coords
@@ -1274,7 +1273,6 @@ async function recognizeGrindTime(worker, img, fullText = '') {
 function clearOcr() {
   _ocrDetections = [];
   _ocrLocalDetections = [];
-  _ocrSlots = [];
   _ocrImageDataUrl = null;
   _ocrSelection = null;
   _ocrDetectedTime = null;
@@ -1364,46 +1362,24 @@ function visualSlotIndex(d, fallback) {
 }
 
 function sortDetectionsByVisualOrder(detections) {
-  const source = detections || [];
-  return [...source].sort((a, b) => {
-    const ai = visualSlotIndex(a, source.indexOf(a));
-    const bi = visualSlotIndex(b, source.indexOf(b));
+  return [...(detections || [])].sort((a, b) => {
+    const ai = visualSlotIndex(a, detections.indexOf(a));
+    const bi = visualSlotIndex(b, detections.indexOf(b));
     return ai.row - bi.row || ai.col - bi.col;
   });
 }
 
-function bboxCenter(bbox) {
-  return bbox ? { x: (bbox.x0 + bbox.x1) / 2, y: (bbox.y0 + bbox.y1) / 2 } : { x: 0, y: 0 };
-}
-
-function detectionForSlot(slot) {
-  if (!slot?.bbox) return null;
-  const candidates = (_ocrLocalDetections.length ? _ocrLocalDetections : _ocrDetections)
-    .filter(d => d.bbox)
-    .map(d => {
-      const c = bboxCenter(d.bbox);
-      const inside = c.x >= slot.bbox.x0 - 3 && c.x <= slot.bbox.x1 + 3 && c.y >= slot.bbox.y0 - 3 && c.y <= slot.bbox.y1 + 3;
-      const sc = bboxCenter(slot.bbox);
-      const distance = Math.abs(c.x - sc.x) + Math.abs(c.y - sc.y);
-      return { d, inside, distance };
-    })
-    .filter(x => x.inside || x.d.slotIndex === slot.slotIndex)
-    .sort((a, b) => a.distance - b.distance);
-  return candidates[0]?.d || null;
-}
-
 function smartScanSlotHints() {
-  const slots = _ocrSlots.length
-    ? _ocrSlots
-    : sortDetectionsByVisualOrder(_ocrLocalDetections.length ? _ocrLocalDetections : _ocrDetections)
-      .map((d, i) => ({ slotIndex: i + 1, bbox: d.bbox }));
-  return slots
-    .map((slot, i) => {
-      const d = detectionForSlot(slot);
+  const items = getSpotItems(sessionContext.spot);
+  const local = sortDetectionsByVisualOrder(_ocrLocalDetections.length ? _ocrLocalDetections : _ocrDetections);
+  return local
+    .filter(d => d.itemId && !String(d.itemId).startsWith('__'))
+    .map((d, i) => {
+      const item = items.find(it => it.id === d.itemId);
       return {
-        slotIndex: slot.slotIndex || i + 1,
-        itemName: '',
-        qty: d?.qty || 0,
+        slotIndex: i + 1,
+        itemName: item?.name || '',
+        qty: d.qty || 0,
       };
     });
 }
@@ -1433,34 +1409,59 @@ function sortedSmartRows(scan) {
     .sort((a, b) => (a.slotIndex || a.originalIndex + 1) - (b.slotIndex || b.originalIndex + 1));
 }
 
-const SMART_SCAN_MIN_CONFIDENCE = 0.65;
-
 function applySmartScanResult(scan, baseDetections = null) {
   const items = getSpotItems(sessionContext.spot);
-  const rows = sortedSmartRows(scan).filter(row => row.slotIndex > 0);
-  const slots = _ocrSlots.length
-    ? _ocrSlots
-    : sortDetectionsByVisualOrder(baseDetections || _ocrLocalDetections || [])
-      .map((d, i) => ({ slotIndex: i + 1, bbox: d.bbox }));
+  const rows = sortedSmartRows(scan);
+  const hasSlotIndexes = rows.some(row => row.slotIndex > 0);
+  const local = sortDetectionsByVisualOrder(baseDetections || _ocrLocalDetections || []);
 
-  _ocrDetections = rows.map(row => {
-    const item = matchSmartScanItem(row.itemName, items);
-    const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
-    if (!item || confidence < SMART_SCAN_MIN_CONFIDENCE) return null;
+  if (local.length) {
+    const rowsBySlot = new Map(rows.filter(row => row.slotIndex > 0).map(row => [row.slotIndex, row]));
+    const maxSlot = Math.max(local.length, ...rows.map(row => row.slotIndex || 0), rows.length);
+    const merged = [];
+    for (let i = 1; i <= maxSlot; i++) {
+      const localRow = local[i - 1] ? cloneOcrDetection(local[i - 1]) : null;
+      const row = hasSlotIndexes ? rowsBySlot.get(i) : rows[i - 1];
+      if (!localRow && !row) continue;
 
-    const slot = slots.find(s => s.slotIndex === row.slotIndex);
-    const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
-    return {
-      text: qty > 0 ? String(qty) : '',
-      qty,
-      bbox: slot?.bbox || null,
-      itemId: item.id,
-      matchedName: item.name,
-      score: confidence,
-      source: 'openai-smart-scan',
-      slotIndex: row.slotIndex,
-    };
-  }).filter(Boolean);
+      const smartItem = row ? matchSmartScanItem(row.itemName, items) : null;
+      const localItem = localRow?.itemId ? items.find(it => it.id === localRow.itemId) : null;
+      const confidence = Math.max(0, Math.min(1, Number(row?.confidence) || 0));
+      const item = localItem || smartItem;
+      if (!item) continue;
+
+      const smartQty = Math.max(0, Math.floor(Number(row?.qty) || 0));
+      const qty = smartQty || localRow?.qty || 0;
+      merged.push({
+        ...(localRow || {}),
+        text: qty > 0 ? String(qty) : '',
+        qty,
+        bbox: localRow?.bbox || null,
+        itemId: item.id,
+        matchedName: item.name,
+        score: confidence || localRow?.score || null,
+        source: 'openai-smart-scan-merged',
+        slotIndex: i,
+      });
+    }
+    _ocrDetections = merged;
+  } else {
+    _ocrDetections = rows.map(row => {
+      const item = matchSmartScanItem(row.itemName, items);
+      if (!item) return null;
+      const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
+      return {
+        text: qty > 0 ? String(qty) : '',
+        qty,
+        bbox: null,
+        itemId: item.id,
+        matchedName: item.name,
+        score: Number(row.confidence) || null,
+        source: 'openai-smart-scan',
+        slotIndex: row.slotIndex || null,
+      };
+    }).filter(Boolean);
+  }
 
   if (scan?.time?.detected) {
     _ocrDetectedTime = {
@@ -1950,17 +1951,7 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
   sourceCanvas.height = img.naturalHeight;
   sourceCanvas.getContext('2d').drawImage(img, 0, 0);
 
-  const slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect)
-    .sort((a, b) => {
-      const ar = Math.round((a.y + a.h / 2) / 30);
-      const br = Math.round((b.y + b.h / 2) / 30);
-      return ar - br || a.x - b.x;
-    })
-    .map((slot, i) => ({ ...slot, slotIndex: i + 1 }));
-  _ocrSlots = slots.map(slot => ({
-    slotIndex: slot.slotIndex,
-    bbox: { x0: slot.x, y0: slot.y, x1: slot.x + slot.w, y1: slot.y + slot.h },
-  }));
+  const slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
   if (!slots.length) return [];
 
   const templates = await buildItemTemplates(items);
@@ -1985,7 +1976,6 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
       matchedName: best.item.name,
       score: best.score,
       source: 'item-match',
-      slotIndex: slot.slotIndex,
     });
   }
 

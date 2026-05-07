@@ -88,8 +88,7 @@ function Invoke-SmartScan {
   $slotSection = if ($slotHints.Count) {
     ($slotHints | Sort-Object { [int]$_.slotIndex } | ForEach-Object {
       $qtyText = if ($_.qty) { "local qty guess $($_.qty)" } else { "no local qty" }
-      $itemText = if ($_.itemName) { $_.itemName } else { "no local item guess" }
-      "$($_.slotIndex). $itemText ($qtyText)"
+      "$($_.slotIndex). $($_.itemName) ($qtyText)"
     }) -join "`n"
   } else {
     "No client slot hints were provided."
@@ -103,14 +102,13 @@ $itemNames
 Client-detected slots from left to right:
 $slotSection
 
-Return rows only for visible item slots whose icon clearly matches one of the local Settings item names.
-Omit visible slots that are not in the local Settings item list or are unclear. Do not force the closest item name.
-slotIndex is 1 for the leftmost visible item icon among ALL visible icons, 2 for the next, and so on, even when omitted slots exist.
+Return one loot row per visible item slot, in strict left-to-right visual order.
+slotIndex is 1 for the leftmost visible item icon, 2 for the next, and so on.
 Do not sort by item name, item type, or quantity.
+Do not skip a visible item slot. If the item name is uncertain, choose the closest local Settings item and lower confidence.
 Read the stack quantity from the bottom-left of that exact same item icon. Do not borrow a quantity from another slot.
 The leftmost slot can have a 4-6 digit trash-loot quantity such as 22358; read all digits.
 If a quantity is unreadable, use 0.
-Use confidence from 0 to 1 for the item-icon match.
 If grind time is visible, return it; otherwise set detected=false and hours/minutes/seconds to 0.
 "@
 
