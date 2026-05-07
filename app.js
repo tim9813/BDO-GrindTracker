@@ -1436,17 +1436,10 @@ function sortedSmartRows(scan) {
 }
 
 const SMART_SCAN_MIN_CONFIDENCE = 0.65;
-const LOCAL_OVERRIDE_CONFIDENCE = 0.82;
 
-function smartItemForSlot(row, slot, items) {
+function smartItemForSlot(row, items) {
   const smartItem = matchSmartScanItem(row.itemName, items);
   const smartConfidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
-  const localRow = slot ? detectionForSlot(slot) : null;
-  const localItem = localRow?.itemId ? items.find(it => it.id === localRow.itemId) : null;
-  const localConfidence = Math.max(0, Math.min(1, Number(localRow?.score) || 0));
-  if (localItem && localConfidence >= LOCAL_OVERRIDE_CONFIDENCE && (!smartItem || smartItem.id !== localItem.id)) {
-    return { item: localItem, confidence: localConfidence, source: 'local-slot-override' };
-  }
   if (smartItem && smartConfidence >= SMART_SCAN_MIN_CONFIDENCE) {
     return { item: smartItem, confidence: smartConfidence, source: 'openai-smart-scan' };
   }
@@ -1463,7 +1456,7 @@ function applySmartScanResult(scan, baseDetections = null) {
 
   _ocrOverlayDetections = rows.map(row => {
     const slot = slots.find(s => s.slotIndex === row.slotIndex);
-    const match = smartItemForSlot(row, slot, items);
+    const match = smartItemForSlot(row, items);
     const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
     if (!slot || qty <= 0) return null;
     return {
@@ -1480,7 +1473,7 @@ function applySmartScanResult(scan, baseDetections = null) {
 
   _ocrDetections = rows.map(row => {
     const slot = slots.find(s => s.slotIndex === row.slotIndex);
-    const match = smartItemForSlot(row, slot, items);
+    const match = smartItemForSlot(row, items);
     if (!match.item) return null;
 
     const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
