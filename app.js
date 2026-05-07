@@ -1436,6 +1436,22 @@ function sortedSmartRows(scan) {
 }
 
 const SMART_SCAN_MIN_CONFIDENCE = 0.65;
+const LOCAL_OVERRIDE_CONFIDENCE = 0.82;
+
+function smartItemForSlot(row, slot, items) {
+  const smartItem = matchSmartScanItem(row.itemName, items);
+  const smartConfidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
+  const localRow = slot ? detectionForSlot(slot) : null;
+  const localItem = localRow?.itemId ? items.find(it => it.id === localRow.itemId) : null;
+  const localConfidence = Math.max(0, Math.min(1, Number(localRow?.score) || 0));
+  if (localItem && localConfidence >= LOCAL_OVERRIDE_CONFIDENCE && (!smartItem || smartItem.id !== localItem.id)) {
+    return { item: localItem, confidence: localConfidence, source: 'local-slot-override' };
+  }
+  if (smartItem && smartConfidence >= SMART_SCAN_MIN_CONFIDENCE) {
+    return { item: smartItem, confidence: smartConfidence, source: 'openai-smart-scan' };
+  }
+  return { item: null, confidence: smartConfidence, source: 'openai-smart-scan' };
+}
 
 function applySmartScanResult(scan, baseDetections = null) {
   const items = getSpotItems(sessionContext.spot);
@@ -1447,37 +1463,35 @@ function applySmartScanResult(scan, baseDetections = null) {
 
   _ocrOverlayDetections = rows.map(row => {
     const slot = slots.find(s => s.slotIndex === row.slotIndex);
-    const item = matchSmartScanItem(row.itemName, items);
-    const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
+    const match = smartItemForSlot(row, slot, items);
     const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
     if (!slot || qty <= 0) return null;
     return {
       text: String(qty),
       qty,
       bbox: slot.bbox || null,
-      itemId: item && confidence >= SMART_SCAN_MIN_CONFIDENCE ? item.id : null,
-      matchedName: item?.name || row.itemName || '',
-      score: confidence,
+      itemId: match.item?.id || null,
+      matchedName: match.item?.name || row.itemName || '',
+      score: match.confidence,
       source: 'openai-smart-overlay',
       slotIndex: row.slotIndex,
     };
   }).filter(Boolean);
 
   _ocrDetections = rows.map(row => {
-    const item = matchSmartScanItem(row.itemName, items);
-    const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
-    if (!item || confidence < SMART_SCAN_MIN_CONFIDENCE) return null;
-
     const slot = slots.find(s => s.slotIndex === row.slotIndex);
+    const match = smartItemForSlot(row, slot, items);
+    if (!match.item) return null;
+
     const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
     return {
       text: qty > 0 ? String(qty) : '',
       qty,
       bbox: slot?.bbox || null,
-      itemId: item.id,
-      matchedName: item.name,
-      score: confidence,
-      source: 'openai-smart-scan',
+      itemId: match.item.id,
+      matchedName: match.item.name,
+      score: match.confidence,
+      source: match.source,
       slotIndex: row.slotIndex,
     };
   }).filter(Boolean);

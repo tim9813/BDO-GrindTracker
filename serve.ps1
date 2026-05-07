@@ -103,6 +103,8 @@ $itemNames
 After the screenshot, reference images are provided for linked local Settings items when available.
 Match each screenshot slot visually against those reference item icons first; do not rely only on item-name memory.
 When a screenshot icon matches a reference icon, return that exact reference itemName.
+Reference images are NOT in screenshot slot order. Do not map the first screenshot slot to the first reference image or the last screenshot slot to the last reference image.
+The screenshot slot order is only the left-to-right visual order inside the uploaded loot-row screenshot.
 
 Client-detected slots from left to right:
 $slotSection
