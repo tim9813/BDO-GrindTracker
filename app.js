@@ -1532,8 +1532,10 @@ async function runSmartScan() {
     applySmartScanResult(payload.result, baseDetections);
     recordOpenAiUsage(payload, _ocrDetections.length);
     const usage = payload.usage?.total_tokens ? ` (${payload.usage.total_tokens} tokens)` : '';
-    setSmartScanStatus(`Smart Scan complete: ${_ocrDetections.length} item${_ocrDetections.length === 1 ? '' : 's'}${usage}.`);
-    if (!_ocrDetections.length) alert('Smart Scan did not match any visible loot to this spot\'s linked items.');
+    const overlayCount = _ocrOverlayDetections.length;
+    const itemText = `${_ocrDetections.length} matched item${_ocrDetections.length === 1 ? '' : 's'}`;
+    const slotText = overlayCount ? `, ${overlayCount} visible slot${overlayCount === 1 ? '' : 's'} read` : '';
+    setSmartScanStatus(`Smart Scan complete: ${itemText}${slotText}${usage}.`);
   } catch (e) {
     console.error(e);
     setSmartScanStatus(e.message || 'Smart Scan failed.', true);
