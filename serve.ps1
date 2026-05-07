@@ -57,7 +57,7 @@ function Get-OpenAIConfig {
   }
   return [pscustomobject]@{
     ApiKey = $apiKey
-    Model = if ($config.model) { $config.model } else { "gpt-4.1-mini" }
+    Model = if ($config.model) { $config.model } else { "gpt-5.4-mini" }
   }
 }
 

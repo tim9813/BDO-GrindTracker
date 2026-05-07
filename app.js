@@ -323,17 +323,16 @@ function fmtNumber(n) {
 }
 
 const OPENAI_TOKEN_PRICES = {
-  'gpt-4.1': { input: 2.00, output: 8.00 },
-  'gpt-4.1-mini': { input: 0.40, output: 1.60 },
-  'gpt-4.1-nano': { input: 0.10, output: 0.40 },
-  'gpt-4o': { input: 2.50, output: 10.00 },
-  'gpt-4o-mini': { input: 0.15, output: 0.60 },
+  'gpt-5.5': { input: 5.00, output: 30.00 },
+  'gpt-5.4': { input: 2.50, output: 15.00 },
+  'gpt-5.4-mini': { input: 0.75, output: 4.50 },
+  'gpt-5.4-nano': { input: 0.20, output: 1.25 },
 };
 
 function priceForOpenAiModel(model) {
   const id = String(model || '').toLowerCase();
   const keys = Object.keys(OPENAI_TOKEN_PRICES).sort((a, b) => b.length - a.length);
-  return keys.find(k => id === k || id.startsWith(`${k}-`));
+  return keys.find(k => id === k || id.startsWith(`${k}-20`));
 }
 
 function estimateOpenAiCost(entry) {

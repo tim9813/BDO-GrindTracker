@@ -39,7 +39,7 @@ Smart Scan is optional. It sends only the uploaded screenshot or selected loot-r
 ```json
 {
   "openaiApiKey": "sk-your-openai-api-key-here",
-  "model": "gpt-4.1-mini"
+  "model": "gpt-5.4-mini"
 }
 ```
 
