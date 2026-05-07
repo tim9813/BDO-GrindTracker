@@ -6,7 +6,7 @@ const TAX = 0.155;
 function loadStore() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) return { spots: [], items: [], classes: [], sessions: [] };
+    if (!raw) return { spots: [], items: [], classes: [], sessions: [], apiUsage: [] };
     const storeData = sanitizeStoreData(migrateStoreData(JSON.parse(raw)));
     const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
     if (legacyRaw && raw !== legacyRaw) {
@@ -14,7 +14,7 @@ function loadStore() {
     }
     return storeData;
   } catch {
-    return { spots: [], items: [], classes: [], sessions: [] };
+    return { spots: [], items: [], classes: [], sessions: [], apiUsage: [] };
   }
 }
 function saveStore() { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
@@ -64,6 +64,7 @@ function migrateStoreData(data) {
     items,
     classes: Array.isArray(p.classes) ? p.classes : [],
     sessions: Array.isArray(p.sessions) ? p.sessions : [],
+    apiUsage: Array.isArray(p.apiUsage) ? p.apiUsage : [],
   };
 }
 
@@ -220,7 +221,29 @@ function sanitizeStoreData(data) {
       };
     }));
 
-  return { spots, items, classes, sessions };
+  const apiUsage = (Array.isArray(p.apiUsage) ? p.apiUsage : [])
+    .filter(u => u && typeof u === 'object')
+    .map(u => {
+      const createdAt = Number.isFinite(new Date(u.createdAt).getTime()) ? new Date(u.createdAt).toISOString() : new Date().toISOString();
+      const inputTokens = Math.floor(clampNumber(u.inputTokens ?? u.input_tokens, 0, Number.MAX_SAFE_INTEGER));
+      const outputTokens = Math.floor(clampNumber(u.outputTokens ?? u.output_tokens, 0, Number.MAX_SAFE_INTEGER));
+      const totalTokens = Math.floor(clampNumber(u.totalTokens ?? u.total_tokens, 0, Number.MAX_SAFE_INTEGER)) || inputTokens + outputTokens;
+      return {
+        id: safeId(u.id, 'usage', new Map(), usedIds),
+        createdAt,
+        provider: safeText(u.provider || 'openai', 40),
+        model: safeText(u.model, 80) || 'unknown',
+        spotName: safeText(u.spotName, 120),
+        itemCount: Math.floor(clampNumber(u.itemCount, 0, Number.MAX_SAFE_INTEGER)),
+        inputTokens,
+        outputTokens,
+        totalTokens,
+      };
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 500);
+
+  return { spots, items, classes, sessions, apiUsage };
 }
 
 function colorFor(str) {
@@ -256,6 +279,23 @@ function avatarHTML(thing, size = 32, rounded = 'rounded-md') {
   return fallback;
 }
 
+function itemIconHTML(thing, size = 52, rounded = 'rounded-md') {
+  const px = `${size}px`;
+  const letter = (thing.name?.[0] || '?').toUpperCase();
+  const fallback = `<div class="${rounded} flex items-center justify-center text-xs font-bold text-white shrink-0 bg-panel2 border border-border" style="width:${px};height:${px};background:${colorFor(thing.name || '')}">${escapeHtml(letter)}</div>`;
+  const url = normalizeImageUrl(thing.iconUrl || thing.imageUrl);
+  if (url) {
+    const onerr = escapeAttr(`this.outerHTML=${JSON.stringify(fallback)}`);
+    return `
+      <span class="${rounded} inline-flex items-center justify-center overflow-hidden bg-panel2 border border-border shrink-0" style="width:${px};height:${px}">
+        <img src="${escapeAttr(url)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+          class="w-full h-full object-contain scale-[1.10]" onerror="${onerr}">
+      </span>
+    `;
+  }
+  return fallback;
+}
+
 function fmtSilver(n) {
   if (!isFinite(n) || n === 0) return '0';
   if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -276,6 +316,36 @@ function fmtHours(totalHours) {
   const m = totalMinutes % 60;
   if (h === 0) return `${m}m`;
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function fmtNumber(n) {
+  return Math.round(Number(n) || 0).toLocaleString('en-US');
+}
+
+const OPENAI_TOKEN_PRICES = {
+  'gpt-5.5': { input: 5.00, output: 30.00 },
+  'gpt-5.4': { input: 2.50, output: 15.00 },
+  'gpt-5.4-mini': { input: 0.75, output: 4.50 },
+  'gpt-5.4-nano': { input: 0.20, output: 1.25 },
+};
+
+function priceForOpenAiModel(model) {
+  const id = String(model || '').toLowerCase();
+  const keys = Object.keys(OPENAI_TOKEN_PRICES).sort((a, b) => b.length - a.length);
+  return keys.find(k => id === k || id.startsWith(`${k}-20`));
+}
+
+function estimateOpenAiCost(entry) {
+  const modelKey = priceForOpenAiModel(entry.model);
+  if (!modelKey) return null;
+  const price = OPENAI_TOKEN_PRICES[modelKey];
+  return ((entry.inputTokens || 0) * price.input + (entry.outputTokens || 0) * price.output) / 1_000_000;
+}
+
+function fmtUsd(value) {
+  if (value == null || !isFinite(value)) return 'n/a';
+  if (value > 0 && value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
 }
 
 function fmtSessionDuration(hours = 0, mins = 0, secs = 0) {
@@ -361,7 +431,7 @@ function setView(name) {
   $$('section[data-pane]').forEach(s => s.classList.toggle('hidden', s.dataset.pane !== name));
   $('#addBtn').style.display = name === 'settings' ? 'none' : '';
   $('#rangeTabsWrap').style.display = name === 'settings' ? 'none' : '';
-  if (name === 'settings') { renderItemList(); renderSpotList(); renderClassList(); }
+  if (name === 'settings') { renderItemList(); renderSpotList(); renderClassList(); renderApiUsage(); }
   else renderDashboard();
 }
 $$('.view-tab').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -695,7 +765,7 @@ function renderItemList() {
         ${avatarHTML(it, 36)}
         <div class="min-w-0">
           <div class="text-sm font-medium truncate">${escapeHtml(it.name)}</div>
-          <div class="text-xs text-mute2">${fmtSilver(it.price || 0)}${it.taxable ? ' · taxable' : ''} · used by ${usedBy} spot${usedBy === 1 ? '' : 's'}</div>
+          <div class="text-xs text-mute2">${fmtSilver(it.price || 0)} · used by ${usedBy} spot${usedBy === 1 ? '' : 's'}</div>
         </div>
         <button class="text-xs text-mute hover:text-white px-2 py-1" data-edit-item="${it.id}">Edit</button>
         <button class="text-xs text-red-400 hover:text-red-300 px-2 py-1" data-del-item="${it.id}">Delete</button>
@@ -714,12 +784,10 @@ function openItemEditor(id = null) {
     $('#itemName').value  = it?.name || '';
     $('#itemImage').value = it?.imageUrl || '';
     $('#itemPrice').value = it?.price || 0;
-    $('#itemTax').checked = it ? !!it.taxable : true;
   } else {
     $('#itemName').value = '';
     $('#itemImage').value = '';
     $('#itemPrice').value = 0;
-    $('#itemTax').checked = true;
   }
   $('#itemName').focus();
 }
@@ -732,7 +800,7 @@ function saveItem() {
     name,
     imageUrl: $('#itemImage').value.trim(),
     price: clampNumber($('#itemPrice').value),
-    taxable: $('#itemTax').checked,
+    taxable: false,
   };
   if (editingItemId) {
     const it = store.items.find(x => x.id === editingItemId);
@@ -943,8 +1011,6 @@ function openSessionForm(spot) {
   $('#sessHours').value = 1;
   $('#sessMins').value = 0;
   $('#sessSecs').value = 0;
-  $('#sessDropRate').value = 100;
-  $('#sessApplyTax').checked = true;
   $('#sessNotes').value = '';
 
   renderLootGrid();
@@ -977,7 +1043,7 @@ function renderLootGrid() {
       ${avatarHTML(it, 36)}
       <div class="flex-1 min-w-0">
         <div class="text-xs font-medium truncate" title="${escapeAttr(it.name)}">${escapeHtml(it.name)}</div>
-        <div class="text-[10px] text-mute2">${fmtSilver(it.price || 0)}${it.taxable ? ' · taxed' : ''}</div>
+        <div class="text-[10px] text-mute2">${fmtSilver(it.price || 0)}</div>
       </div>
       <input type="number" min="0" step="1" value="0" data-loot="${it.id}"
         class="w-16 bg-bg border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:border-accent">
@@ -1027,13 +1093,10 @@ function getSessionTimeInput() {
 
 function calcSession() {
   const items = getSpotItems(sessionContext.spot);
-  const applyTax = $('#sessApplyTax').checked;
   let total = 0;
   for (const it of items) {
     const qty = Math.floor(clampNumber(sessionContext.lootQty[it.id]));
-    let revenue = clampNumber(it.price) * qty;
-    if (applyTax && it.taxable) revenue *= (1 - TAX);
-    total += revenue;
+    total += clampNumber(it.price) * qty;
   }
   const { totalHours } = getSessionTimeInput();
   const perHour = totalHours > 0 ? total / totalHours : 0;
@@ -1045,7 +1108,7 @@ function recalcTotals() {
   $('#sessTotalSilver').textContent = fmtSilver(total);
   $('#sessSilverHr').textContent = fmtSilver(perHour);
 }
-['sessHours','sessMins','sessSecs','sessDropRate','sessApplyTax'].forEach(id => {
+['sessHours','sessMins','sessSecs'].forEach(id => {
   $('#' + id)?.addEventListener('input', recalcTotals);
   $('#' + id)?.addEventListener('change', recalcTotals);
 });
@@ -1064,8 +1127,8 @@ $('#sessSaveBtn')?.addEventListener('click', () => {
     mins,
     secs,
     totalHours,
-    dropRatePct: clampNumber($('#sessDropRate').value),
-    applyTax: $('#sessApplyTax').checked,
+    dropRatePct: 100,
+    applyTax: false,
     loot: { ...sessionContext.lootQty },
     notes: $('#sessNotes').value.trim(),
     totalSilver: total,
@@ -1077,56 +1140,15 @@ $('#sessSaveBtn')?.addEventListener('click', () => {
   renderDashboard();
 });
 
-// ==================== OCR (Tesseract.js) ====================
-let _tesseractScriptPromise = null;
-let _ocrWorker = null;
+// ==================== OpenAI Screenshot Scan ====================
 let _ocrDetections = [];   // [{ text, qty, bbox, itemId }]
+let _ocrLocalDetections = [];
+let _ocrOverlayDetections = [];
+let _ocrSlots = [];
 let _ocrImgNaturalSize = { w: 0, h: 0 };
 let _ocrImageDataUrl = null;
 let _ocrSelection = null;  // { x, y, w, h } in natural coords
 let _ocrDetectedTime = null; // { hours, mins }
-
-function loadTesseractScript() {
-  if (typeof Tesseract !== 'undefined') return Promise.resolve();
-  if (_tesseractScriptPromise) return _tesseractScriptPromise;
-  _tesseractScriptPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'vendor/tesseract/tesseract.min.js';
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('Could not load tesseract.min.js'));
-    document.head.appendChild(s);
-  });
-  return _tesseractScriptPromise;
-}
-
-function absUrl(rel) {
-  return new URL(rel, document.baseURI).href;
-}
-
-async function getOcrWorker(progressCb) {
-  if (_ocrWorker) return _ocrWorker;
-  await loadTesseractScript();
-  _ocrWorker = await Tesseract.createWorker('eng', 1, {
-    workerPath: absUrl('vendor/tesseract/worker.min.js'),
-    corePath:   absUrl('vendor/tesseract/'),
-    langPath:   absUrl('vendor/tesseract/lang'),
-    logger: m => progressCb && progressCb(m),
-  });
-  return _ocrWorker;
-}
-
-async function setOcrMode(mode) {
-  // 'digits' | 'full'
-  const worker = _ocrWorker;
-  if (!worker) return;
-  if (mode === 'digits') {
-    await worker.setParameters({ tessedit_char_whitelist: '0123456789,', preserve_interword_spaces: '1', tessedit_pageseg_mode: '6' });
-  } else if (mode === 'line-digits') {
-    await worker.setParameters({ tessedit_char_whitelist: '0123456789,', preserve_interword_spaces: '1', tessedit_pageseg_mode: '7' });
-  } else {
-    await worker.setParameters({ tessedit_char_whitelist: '', preserve_interword_spaces: '1', tessedit_pageseg_mode: '6' });
-  }
-}
 
 function parseTimeFromText(text) {
   if (!text) return null;
@@ -1189,25 +1211,11 @@ function cropImageToDataUrl(img, rect, scale = 2) {
   return cv.toDataURL('image/png');
 }
 
-async function recognizeGrindTime(worker, img, fullText = '') {
-  const fromFull = parseTimeFromText(fullText);
-  if (fromFull) return fromFull;
-
-  const crops = [
-    { x: 0, y: 0, w: img.naturalWidth * 0.72, h: img.naturalHeight * 0.38 },
-    { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight * 0.32 },
-  ];
-  await setOcrMode('full');
-  for (const rect of crops) {
-    const { data } = await worker.recognize(cropImageToDataUrl(img, rect, 3));
-    const parsed = parseTimeFromText(data.text || '');
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
 function clearOcr() {
   _ocrDetections = [];
+  _ocrLocalDetections = [];
+  _ocrOverlayDetections = [];
+  _ocrSlots = [];
   _ocrImageDataUrl = null;
   _ocrSelection = null;
   _ocrDetectedTime = null;
@@ -1219,6 +1227,7 @@ function clearOcr() {
   $('#sessOcrFile').value = '';
   $('#sessOcrTime')?.classList.add('hidden');
   $('#sessOcrSelToolbar')?.classList.add('hidden');
+  setSmartScanStatus('OpenAI-only scan when config.local.json is set.');
 }
 
 function setOcrLoading(text) {
@@ -1237,67 +1246,227 @@ async function fileToDataUrl(file) {
   });
 }
 
+function setSmartScanStatus(text, isError = false) {
+  const el = $('#sessOcrSmartStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('text-red-300', isError);
+  el.classList.toggle('text-mute2', !isError);
+}
+
+function imageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+async function smartScanImagePayload() {
+  if (!_ocrImageDataUrl) return null;
+  const img = await imageFromDataUrl(_ocrImageDataUrl);
+  const crop = _ocrSelection
+    ? {
+        x: Math.max(0, Math.floor(_ocrSelection.x)),
+        y: Math.max(0, Math.floor(_ocrSelection.y)),
+        w: Math.max(1, Math.floor(_ocrSelection.w)),
+        h: Math.max(1, Math.floor(_ocrSelection.h)),
+      }
+    : { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+
+  const maxSide = 2200;
+  const baseSide = Math.max(crop.w, crop.h);
+  const minSide = _ocrSelection ? 1500 : 1200;
+  const scale = Math.min(4, maxSide / baseSide, Math.max(1, minSide / baseSide));
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(crop.w * scale));
+  cv.height = Math.max(1, Math.round(crop.h * scale));
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, cv.width, cv.height);
+  return {
+    imageDataUrl: cv.toDataURL('image/png'),
+    frame: crop,
+  };
+}
+
+function sortedSmartRows(scan) {
+  return (Array.isArray(scan?.loot) ? scan.loot : [])
+    .map((row, i) => ({
+      ...row,
+      slotIndex: Math.max(0, Math.floor(Number(row.slotIndex) || 0)),
+      originalIndex: i,
+    }))
+    .sort((a, b) => (a.slotIndex || a.originalIndex + 1) - (b.slotIndex || b.originalIndex + 1));
+}
+
+function smartItemForSlot(row, items) {
+  const smartConfidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
+  const itemId = String(row.itemId || '');
+  const item = itemId ? items.find(it => it.id === itemId) : null;
+  return { item: item || null, confidence: smartConfidence, source: 'openai-smart-scan' };
+}
+
+function smartScanRowBbox(row, frame) {
+  const box = row?.bbox;
+  if (!box || !frame) return null;
+  const x0 = Math.max(0, Math.min(1000, Number(box.x0) || 0));
+  const y0 = Math.max(0, Math.min(1000, Number(box.y0) || 0));
+  const x1 = Math.max(0, Math.min(1000, Number(box.x1) || 0));
+  const y1 = Math.max(0, Math.min(1000, Number(box.y1) || 0));
+  if (x1 <= x0 || y1 <= y0) return null;
+  return {
+    x0: frame.x + (x0 / 1000) * frame.w,
+    y0: frame.y + (y0 / 1000) * frame.h,
+    x1: frame.x + (x1 / 1000) * frame.w,
+    y1: frame.y + (y1 / 1000) * frame.h,
+  };
+}
+
+function applySmartScanResult(scan, frame = null) {
+  const items = getSpotItems(sessionContext.spot);
+  const rows = sortedSmartRows(scan).filter(row => row.slotIndex > 0);
+
+  _ocrOverlayDetections = rows.map(row => {
+    const bbox = smartScanRowBbox(row, frame);
+    const match = smartItemForSlot(row, items);
+    const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
+    if (!bbox || qty <= 0) return null;
+    return {
+      text: String(qty),
+      qty,
+      bbox,
+      itemId: match.item?.id || null,
+      matchedName: match.item?.name || row.itemName || '',
+      score: match.confidence,
+      source: 'openai-smart-overlay',
+      slotIndex: row.slotIndex,
+    };
+  }).filter(Boolean);
+
+  _ocrDetections = rows.map(row => {
+    const bbox = smartScanRowBbox(row, frame);
+    const match = smartItemForSlot(row, items);
+    if (!match.item) return null;
+
+    const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
+    return {
+      text: qty > 0 ? String(qty) : '',
+      qty,
+      bbox,
+      itemId: match.item.id,
+      matchedName: match.item.name,
+      score: match.confidence,
+      source: match.source,
+      slotIndex: row.slotIndex,
+    };
+  }).filter(Boolean);
+
+  if (scan?.time?.detected) {
+    _ocrDetectedTime = {
+      hours: Math.max(0, Math.floor(Number(scan.time.hours) || 0)),
+      mins: Math.max(0, Math.min(59, Math.floor(Number(scan.time.minutes) || 0))),
+      secs: Math.max(0, Math.min(59, Math.floor(Number(scan.time.seconds) || 0))),
+    };
+    $('#sessOcrTime').classList.remove('hidden');
+    $('#sessOcrTimeText').textContent = formatDetectedTime(_ocrDetectedTime);
+  }
+
+  renderOcrList();
+  drawOcrOverlay();
+}
+
+async function runSmartScan() {
+  if (!_ocrImageDataUrl || !sessionContext?.spot) {
+    alert('Drop or paste a screenshot first.');
+    return;
+  }
+  const items = getSpotItems(sessionContext.spot);
+  if (!items.length) {
+    alert('Link items to this spot in Settings first.');
+    return;
+  }
+
+  const btn = $('#sessOcrSmartScan');
+  const selBtn = $('#sessOcrScanSel');
+  btn.disabled = true;
+  if (selBtn) selBtn.disabled = true;
+  btn.classList.add('opacity-60');
+  setSmartScanStatus(_ocrSelection ? 'Smart scanning selected region...' : 'Smart scanning screenshot...');
+  try {
+    const scanImage = await smartScanImagePayload();
+    if (!scanImage?.imageDataUrl) throw new Error('Could not prepare screenshot for Smart Scan.');
+    const res = await fetch('/api/smart-scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageDataUrl: scanImage.imageDataUrl,
+        spotName: sessionContext.spot.name,
+        items: items.map((it, index) => ({
+          id: it.id,
+          refIndex: index + 1,
+          name: it.name,
+          imageUrl: normalizeImageUrl(it.imageUrl || it.iconUrl || ''),
+        })),
+      }),
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok || !payload?.ok) {
+      throw new Error(payload?.error || `Smart Scan failed (${res.status})`);
+    }
+    applySmartScanResult(payload.result, scanImage.frame);
+    recordOpenAiUsage(payload, _ocrDetections.length);
+    const usage = payload.usage?.total_tokens ? ` (${payload.usage.total_tokens} tokens)` : '';
+    const overlayCount = _ocrOverlayDetections.length;
+    const itemText = `${_ocrDetections.length} matched item${_ocrDetections.length === 1 ? '' : 's'}`;
+    const slotText = overlayCount ? `, ${overlayCount} visible slot${overlayCount === 1 ? '' : 's'} read` : '';
+    setSmartScanStatus(`Smart Scan complete: ${itemText}${slotText}${usage}.`);
+  } catch (e) {
+    console.error(e);
+    setSmartScanStatus(e.message || 'Smart Scan failed.', true);
+    alert(e.message || 'Smart Scan failed.');
+  } finally {
+    btn.disabled = false;
+    if (selBtn) selBtn.disabled = false;
+    btn.classList.remove('opacity-60');
+  }
+}
+
 async function handleOcrFile(file) {
   if (!file || !file.type?.startsWith('image/')) {
     alert('Please drop an image file.');
     return;
   }
-  console.log('[OCR] handleOcrFile build=v5');
-  setOcrLoading('Loading scanner… (first run can take 5–10 s)');
+  setOcrLoading('Preparing screenshot...');
   try {
     const dataUrl = await fileToDataUrl(file);
+    _ocrDetections = [];
+    _ocrLocalDetections = [];
+    _ocrOverlayDetections = [];
+    _ocrSlots = [];
+    _ocrSelection = null;
+    _ocrDetectedTime = null;
     _ocrImageDataUrl = dataUrl;
     const img = new Image();
     img.src = dataUrl;
     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
     _ocrImgNaturalSize = { w: img.naturalWidth, h: img.naturalHeight };
 
-    const worker = await getOcrWorker(m => {
-      if (m.status === 'loading tesseract core' || m.status === 'initializing tesseract') {
-        setOcrLoading('Loading scanner…');
-      } else if (m.status === 'loading language traineddata') {
-        setOcrLoading('Loading language model…');
-      } else if (m.status === 'recognizing text') {
-        setOcrLoading(`Scanning… ${Math.round((m.progress || 0) * 100)}%`);
-      }
-    });
-
-    // Pass 1: full text → time pattern
-    setOcrLoading('Detecting time…');
-    await setOcrMode('full');
-    const fullScan = await worker.recognize(dataUrl);
-    _ocrDetectedTime = await recognizeGrindTime(worker, img, fullScan.data.text || '');
-
-    // Pass 2: digits only → numbers list
-    setOcrLoading('Detecting numbers…');
-    await setOcrMode('digits');
-    const digitScan = await worker.recognize(dataUrl);
-    const digitDetections = extractDetections(digitScan.data.words, { x: 0, y: 0 });
-
-    setOcrLoading('Matching loot icons...');
-    const lootMatches = await detectLootMatches(img, digitDetections, null, worker);
-    _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
-
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrPreview').src = dataUrl;
     $('#sessOcrPreview').onload = () => drawOcrOverlay();
     $('#sessOcrResults').classList.remove('hidden');
     $('#sessOcrClear').classList.remove('hidden');
-
-    if (_ocrDetectedTime) {
-      $('#sessOcrTime').classList.remove('hidden');
-      $('#sessOcrTimeText').textContent = formatDetectedTime(_ocrDetectedTime);
-    } else {
-      $('#sessOcrTime').classList.add('hidden');
-    }
-
-    if (_ocrDetections.length === 0 && !_ocrDetectedTime) {
-      alert('Nothing recognized. Try cropping in on the loot row, or use a higher-resolution screenshot.');
-    }
+    $('#sessOcrTime').classList.add('hidden');
+    $('#sessOcrSelToolbar').classList.add('hidden');
+    setSmartScanStatus('Screenshot ready. Click Smart Scan to send it to OpenAI.');
     renderOcrList();
+    drawOcrOverlay();
   } catch (e) {
     console.error(e);
-    alert('OCR failed: ' + (e.message || e));
+    alert('Screenshot load failed: ' + (e.message || e));
     clearOcr();
   }
 }
@@ -1609,7 +1778,7 @@ function quantityFromDetectionsForSlot(slot, detections) {
     .filter(c => c.cx >= x0 && c.cx <= x1 && c.cy >= y0 && c.cy <= y1)
     .sort((a, b) => (b.cy - a.cy) || (b.cx - a.cx));
   const best = candidates[0];
-  return best ? { qty: best.d.qty, text: best.d.text, index: best.index } : { qty: 1, text: '1', index: -1 };
+  return best ? { qty: best.d.qty, text: best.d.text, index: best.index, source: 'full-scan' } : null;
 }
 
 function makeQuantityCrop(sourceCanvas, slot, mode = 'text') {
@@ -1661,17 +1830,31 @@ function parseQuantityText(text) {
 
 function chooseQuantityCandidate(candidates, fallback) {
   const usable = candidates.filter(Boolean);
-  if (fallback && fallback.qty > 1) usable.push({ ...fallback, source: 'full-scan' });
-  if (!usable.length) return fallback || { qty: 1, text: '1', index: -1 };
-  return usable.sort((a, b) => {
-    const aText = String(a.text);
-    const bText = String(b.text);
-    const suspicious = value => value.length >= 5 && /^(?:19|89|99)/.test(value);
-    if (suspicious(aText) !== suspicious(bText)) return suspicious(aText) ? 1 : -1;
-    const lenDiff = Math.min(bText.length, 5) - Math.min(aText.length, 5);
-    if (lenDiff) return lenDiff;
-    return (b.confidence || 0) - (a.confidence || 0);
-  })[0];
+  if (fallback && fallback.qty > 1) usable.push(fallback);
+  if (!usable.length) return null;
+
+  const groups = new Map();
+  for (const c of usable) {
+    const key = String(c.qty);
+    const confidence = (Number(c.confidence) || (c.source === 'full-scan' ? 55 : 0)) / 100;
+    const cur = groups.get(key) || { qty: c.qty, text: key, count: 0, score: 0, best: c };
+    cur.count++;
+    cur.score += confidence;
+    const bestConfidence = (Number(cur.best.confidence) || (cur.best.source === 'full-scan' ? 55 : 0)) / 100;
+    if (confidence > bestConfidence) cur.best = c;
+    groups.set(key, cur);
+  }
+
+  const ranked = [...groups.values()].sort((a, b) =>
+    b.count - a.count || b.score - a.score || String(b.text).length - String(a.text).length
+  );
+  const top = ranked[0];
+  if (!top) return null;
+  const avg = top.score / top.count;
+  const bestConfidence = (Number(top.best.confidence) || (top.best.source === 'full-scan' ? 55 : 0)) / 100;
+  if (top.count >= 2 && avg >= 0.50) return top.best;
+  if (bestConfidence >= 0.88) return top.best;
+  return null;
 }
 
 async function recognizeSlotQuantity(worker, sourceCanvas, slot, fallback = null) {
@@ -1693,9 +1876,7 @@ async function recognizeSlotQuantity(worker, sourceCanvas, slot, fallback = null
 
 async function quantityForSlot(slot, detections, sourceCanvas, worker) {
   const fallback = quantityFromDetectionsForSlot(slot, detections);
-  const direct = await recognizeSlotQuantity(worker, sourceCanvas, slot, fallback);
-  if (direct) return direct;
-  return fallback;
+  return await recognizeSlotQuantity(worker, sourceCanvas, slot, fallback);
 }
 
 function fallbackSplitSelection(searchRect, count = 9) {
@@ -1723,12 +1904,17 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
   sourceCanvas.height = img.naturalHeight;
   sourceCanvas.getContext('2d').drawImage(img, 0, 0);
 
-  let slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect);
-  if (!slots.length && searchRect) {
-    const guessCount = Math.max(8, Math.min(10, items.length || 9));
-    slots = fallbackSplitSelection(searchRect, guessCount);
-    console.log('[OCR] auto-detect failed; falling back to equal-split into', slots.length, 'cells');
-  }
+  const slots = detectLootSlotsFromCanvas(sourceCanvas, searchRect)
+    .sort((a, b) => {
+      const ar = Math.round((a.y + a.h / 2) / 30);
+      const br = Math.round((b.y + b.h / 2) / 30);
+      return ar - br || a.x - b.x;
+    })
+    .map((slot, i) => ({ ...slot, slotIndex: i + 1 }));
+  _ocrSlots = slots.map(slot => ({
+    slotIndex: slot.slotIndex,
+    bbox: { x0: slot.x, y0: slot.y, x1: slot.x + slot.w, y1: slot.y + slot.h },
+  }));
   if (!slots.length) return [];
 
   const templates = items.length ? await buildItemTemplates(items) : [];
@@ -1736,34 +1922,24 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
 
   const matches = [];
   for (const slot of slots) {
-    let matchedItem = null;
-    let matchScore = 0;
-    if (templates.length) {
-      const slotSignature = buildSignature(sourceCanvas, slotIconCrop(slot, sourceCanvas.width, sourceCanvas.height));
-      const scored = templates
-        .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
-        .filter(s => !usedItemIds.has(s.item.id))
-        .sort((a, b) => b.score - a.score);
-      const best = scored[0];
-      const second = scored[1];
-      const acceptStrict = best && best.score >= 0.42 && (!second || best.score - second.score >= 0.03);
-      const acceptLoose  = best && best.score >= 0.32;
-      if (acceptStrict || acceptLoose) {
-        matchedItem = best.item;
-        matchScore = best.score;
-        usedItemIds.add(best.item.id);
-      }
-    }
+    const slotSignature = buildSignature(sourceCanvas, slotIconCrop(slot, sourceCanvas.width, sourceCanvas.height));
+    const scored = templates
+      .map(t => ({ item: t.item, score: compareSignatures(slotSignature, t.signature) }))
+      .sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    const second = scored[1];
+    if (!best || best.score < 0.58 || (second && best.score - second.score < 0.08)) continue;
 
     const quantity = await quantityForSlot(slot, quantityDetections, sourceCanvas, worker);
     matches.push({
-      text: quantity.text,
-      qty: quantity.qty,
+      text: quantity?.text || '',
+      qty: quantity?.qty || 0,
       bbox: { x0: slot.x, y0: slot.y, x1: slot.x + slot.w, y1: slot.y + slot.h },
-      itemId: matchedItem ? matchedItem.id : null,
-      matchedName: matchedItem ? matchedItem.name : null,
-      score: matchScore,
-      source: matchedItem ? 'item-match' : 'slot-detection',
+      itemId: best.item.id,
+      matchedName: best.item.name,
+      score: best.score,
+      source: 'item-match',
+      slotIndex: slot.slotIndex,
     });
   }
 
@@ -1772,77 +1948,37 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
 
 async function rescanSelection() {
   if (!_ocrSelection || !_ocrImageDataUrl) return;
-  const sel = _ocrSelection;
-  setOcrLoading('Scanning selection…');
-  try {
-    const img = new Image();
-    img.src = _ocrImageDataUrl;
-    await new Promise(r => { img.onload = r; });
-    const SCALE = 2;  // upscale for small inventory numbers
-    const cv = document.createElement('canvas');
-    cv.width = Math.round(sel.w * SCALE);
-    cv.height = Math.round(sel.h * SCALE);
-    const ctx = cv.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(img, sel.x, sel.y, sel.w, sel.h, 0, 0, cv.width, cv.height);
-    const cropUrl = cv.toDataURL('image/png');
-
-    const worker = await getOcrWorker();
-    await setOcrMode('digits');
-    const { data } = await worker.recognize(cropUrl);
-    const digitDetections = extractDetections(data.words, { x: sel.x, y: sel.y }, SCALE);
-    const lootMatches = await detectLootMatches(img, digitDetections, sel, worker);
-    _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
-
-    $('#sessOcrLoading').classList.add('hidden');
-    $('#sessOcrResults').classList.remove('hidden');
-    if (_ocrDetections.length === 0) {
-      // Last-resort: surface fallback cells so user can fill in manually.
-      _ocrDetections = fallbackSplitSelection(sel, 9).map(s => ({
-        text: '0', qty: 0,
-        bbox: { x0: s.x, y0: s.y, x1: s.x + s.w, y1: s.y + s.h },
-        itemId: null, matchedName: null, score: 0,
-        source: 'manual-split',
-      }));
-    }
-    renderOcrList();
-    drawOcrOverlay();
-  } catch (e) {
-    alert('Rescan failed: ' + (e.message || e));
-    $('#sessOcrLoading').classList.add('hidden');
-    $('#sessOcrResults').classList.remove('hidden');
-  }
+  return runSmartScan();
 }
 
 function renderOcrList() {
   const wrap = $('#sessOcrList');
   const items = getSpotItems(sessionContext.spot);
   if (_ocrDetections.length === 0) {
-    wrap.innerHTML = `<div class="text-xs text-mute2 py-2">No numbers in current scan. Drag a rectangle on the image to scan a region.</div>`;
+    wrap.innerHTML = `<div class="text-xs text-mute2 py-2">No OpenAI scan results yet. Click Smart Scan, or drag a rectangle first to scan only that region.</div>`;
     $('#sessOcrSummary').textContent = '';
     return;
   }
   wrap.innerHTML = _ocrDetections.map((d, i) => {
+    const mappedItem = d.itemId ? items.find(it => it.id === d.itemId) : null;
+    const preview = mappedItem
+      ? itemIconHTML(mappedItem, 52)
+      : `<div class="w-[52px] h-[52px] rounded-md bg-bg border border-border"></div>`;
     const itemOptionsRendered = items.map(it =>
       `<option value="${it.id}" ${d.itemId === it.id ? 'selected' : ''}>${escapeHtml(it.name)}</option>`
     ).join('');
-    const matchMeta = d.source === 'item-match'
-      ? `<div class="text-[10px] text-mute2 mt-0.5 truncate">Matched ${escapeHtml(d.matchedName || '')} (${Math.round((d.score || 0) * 100)}%)</div>`
-      : '';
+    const qtyValue = d.qty > 0 ? String(d.qty) : '';
     return `
-      <div class="grid grid-cols-[auto_1fr_auto] gap-3 items-center bg-panel border border-border rounded-md px-3 py-1.5">
-        <input type="number" min="0" step="1" value="${escapeAttr(d.qty)}" data-ocr-qty="${i}"
+      <div class="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-center bg-panel border border-border rounded-md px-3 py-2">
+        ${preview}
+        <input type="number" min="0" step="1" placeholder="Qty" value="${escapeAttr(qtyValue)}" data-ocr-qty="${i}"
           class="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-sm font-mono tabular-nums focus:outline-none focus:border-accent">
-        <div class="min-w-0">
         <select data-ocr-pick="${i}" class="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent">
           <option value="">— Skip —</option>
           <option value="__hours__" ${d.itemId === '__hours__' ? 'selected' : ''}>→ Hours</option>
           <option value="__mins__"  ${d.itemId === '__mins__'  ? 'selected' : ''}>→ Minutes</option>
           ${items.length ? `<optgroup label="Loot items">${itemOptionsRendered}</optgroup>` : ''}
         </select>
-        ${matchMeta}
-        </div>
         <button data-ocr-remove="${i}" class="text-red-400 hover:text-red-300 text-xs px-2" title="Remove">×</button>
       </div>
     `;
@@ -1850,15 +1986,19 @@ function renderOcrList() {
 
   $$('[data-ocr-pick]', wrap).forEach(s => s.addEventListener('change', () => {
     _ocrDetections[Number(s.dataset.ocrPick)].itemId = s.value || null;
+    _ocrDetections = _ocrDetections.filter(d => d.itemId);
+    renderOcrList();
     drawOcrOverlay();
     updateOcrSummary();
   }));
   $$('[data-ocr-qty]', wrap).forEach(inp => inp.addEventListener('input', () => {
     const i = Number(inp.dataset.ocrQty);
-    const qty = Math.floor(clampNumber(inp.value));
+    const raw = inp.value.trim();
+    const qty = raw ? Math.floor(clampNumber(raw)) : 0;
     _ocrDetections[i].qty = qty;
-    _ocrDetections[i].text = String(qty);
+    _ocrDetections[i].text = raw;
     drawOcrOverlay();
+    updateOcrSummary();
   }));
   $$('[data-ocr-remove]', wrap).forEach(b => b.addEventListener('click', () => {
     _ocrDetections.splice(Number(b.dataset.ocrRemove), 1);
@@ -1870,7 +2010,8 @@ function renderOcrList() {
 
 function updateOcrSummary() {
   const mapped = _ocrDetections.filter(d => d.itemId).length;
-  $('#sessOcrSummary').textContent = `${mapped} of ${_ocrDetections.length} mapped`;
+  const filled = _ocrDetections.filter(d => d.itemId && d.qty > 0).length;
+  $('#sessOcrSummary').textContent = `${filled} filled, ${mapped} mapped of ${_ocrDetections.length} rows`;
 }
 
 function drawOcrOverlay(extra) {
@@ -1888,7 +2029,7 @@ function drawOcrOverlay(extra) {
   // Detection boxes
   ctx.lineWidth = 2;
   ctx.font = 'bold 12px ui-sans-serif, system-ui, sans-serif';
-  for (const d of _ocrDetections) {
+  for (const d of (_ocrOverlayDetections.length ? _ocrOverlayDetections : _ocrDetections)) {
     if (!d.bbox) continue;
     const { x0, y0, x1, y1 } = d.bbox;
     const x = x0 * sx, y = y0 * sy;
@@ -1928,13 +2069,14 @@ function drawOcrOverlay(extra) {
 
 function applyOcrToLoot() {
   const mapped = _ocrDetections.filter(d => d.itemId);
-  if (!mapped.length && !_ocrDetectedTime) {
-    alert('Nothing to apply — map at least one number to an item, or use the time fill.');
+  if (!mapped.some(d => d.qty > 0) && !_ocrDetectedTime) {
+    alert('Nothing to apply — enter at least one quantity, or use the time fill.');
     return;
   }
   const additions = {};
   let hours = null, mins = null;
   for (const d of mapped) {
+    if (d.qty <= 0) continue;
     if (d.itemId === '__hours__') hours = d.qty;
     else if (d.itemId === '__mins__') mins = Math.min(59, d.qty);
     else additions[d.itemId] = (additions[d.itemId] || 0) + d.qty;
@@ -2002,6 +2144,7 @@ function bindOcrZone() {
   $('#sessOcrApply').addEventListener('click', applyOcrToLoot);
   $('#sessOcrTimeApply').addEventListener('click', applyDetectedTime);
   $('#sessOcrScanSel').addEventListener('click', rescanSelection);
+  $('#sessOcrSmartScan')?.addEventListener('click', runSmartScan);
   $('#sessOcrClearSel').addEventListener('click', () => {
     _ocrSelection = null;
     $('#sessOcrSelToolbar').classList.add('hidden');
@@ -2147,8 +2290,6 @@ function openSessionDetail(id) {
   const cls = s.classId ? store.classes.find(c => c.id === s.classId) : null;
   $('#sessDetailClass').textContent = cls ? cls.name : (s.classId ? '(deleted class)' : 'None');
   $('#sessDetailTime').textContent = fmtSessionDuration(s.hours, s.mins, s.secs);
-  $('#sessDetailDropRate').textContent = `${s.dropRatePct ?? 100}%`;
-  $('#sessDetailTax').textContent = s.applyTax ? '15.5% applied' : 'Not applied';
 
   const lootEntries = Object.entries(s.loot || {}).filter(([, q]) => q > 0);
   if (lootEntries.length) {
@@ -2156,8 +2297,7 @@ function openSessionDetail(id) {
       const it = store.items.find(i => i.id === itemId);
       const name = it?.name || '(deleted item)';
       const price = it?.price || 0;
-      const taxed = it?.taxable && s.applyTax;
-      const lineTotal = qty * price * (taxed ? 0.845 : 1);
+      const lineTotal = qty * price;
       return `
         <div class="flex items-center gap-2 text-xs">
           ${it ? avatarHTML(it, 22) : `<div class="w-[22px] h-[22px] rounded bg-panel"></div>`}
@@ -2211,6 +2351,74 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') $$('.fixed.inset-0:not(.hidden)').forEach(m => m.classList.add('hidden'));
 });
 
+// ==================== OpenAI usage ====================
+function recordOpenAiUsage(payload, itemCount = 0) {
+  const usage = payload?.usage || {};
+  const inputTokens = Math.floor(clampNumber(usage.input_tokens ?? usage.inputTokens, 0, Number.MAX_SAFE_INTEGER));
+  const outputTokens = Math.floor(clampNumber(usage.output_tokens ?? usage.outputTokens, 0, Number.MAX_SAFE_INTEGER));
+  const totalTokens = Math.floor(clampNumber(usage.total_tokens ?? usage.totalTokens, 0, Number.MAX_SAFE_INTEGER)) || inputTokens + outputTokens;
+  const entry = {
+    id: uid(),
+    createdAt: new Date().toISOString(),
+    provider: safeText(payload?.provider || 'openai', 40),
+    model: safeText(payload?.model, 80) || 'unknown',
+    spotName: safeText(sessionContext?.spot?.name, 120),
+    itemCount: Math.floor(clampNumber(itemCount, 0, Number.MAX_SAFE_INTEGER)),
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
+  store.apiUsage = [entry, ...(store.apiUsage || [])].slice(0, 500);
+  saveStore();
+  renderApiUsage();
+  return entry;
+}
+
+function renderApiUsage() {
+  const list = Array.isArray(store.apiUsage) ? store.apiUsage : [];
+  const totalInput = list.reduce((sum, u) => sum + (u.inputTokens || 0), 0);
+  const totalOutput = list.reduce((sum, u) => sum + (u.outputTokens || 0), 0);
+  const totalTokens = list.reduce((sum, u) => sum + (u.totalTokens || 0), 0);
+  const priced = list
+    .map(estimateOpenAiCost)
+    .filter(v => v != null && isFinite(v));
+  const totalCost = priced.reduce((sum, v) => sum + v, 0);
+
+  $('#apiUsageScans') && ($('#apiUsageScans').textContent = fmtNumber(list.length));
+  $('#apiUsageInput') && ($('#apiUsageInput').textContent = fmtNumber(totalInput));
+  $('#apiUsageOutput') && ($('#apiUsageOutput').textContent = fmtNumber(totalOutput));
+  $('#apiUsageTotal') && ($('#apiUsageTotal').textContent = `Total tokens: ${fmtNumber(totalTokens)}`);
+  $('#apiUsageCost') && ($('#apiUsageCost').textContent = priced.length ? fmtUsd(totalCost) : 'n/a');
+
+  const recent = $('#apiUsageRecent');
+  if (!recent) return;
+  if (!list.length) {
+    recent.innerHTML = `<div class="px-3 py-4 text-sm text-mute2 text-center">No Smart Scan usage recorded yet</div>`;
+    return;
+  }
+  recent.innerHTML = list.slice(0, 6).map(u => {
+    const cost = estimateOpenAiCost(u);
+    return `
+      <div class="grid grid-cols-[1fr_auto] md:grid-cols-[1fr_auto_auto_auto] gap-2 items-center px-3 py-2 border-b border-border last:border-b-0 text-xs">
+        <div class="min-w-0">
+          <div class="text-sm truncate">${escapeHtml(u.spotName || 'Smart Scan')}</div>
+          <div class="text-mute2">${new Date(u.createdAt).toLocaleString()} - ${escapeHtml(u.model || 'unknown model')}</div>
+        </div>
+        <div class="text-right tabular-nums">${fmtNumber(u.totalTokens)} tokens</div>
+        <div class="hidden md:block text-right tabular-nums text-mute2">${fmtNumber(u.itemCount)} item${u.itemCount === 1 ? '' : 's'}</div>
+        <div class="hidden md:block text-right tabular-nums text-accent2">${fmtUsd(cost)}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+$('#apiUsageResetBtn')?.addEventListener('click', () => {
+  if (!confirm('Reset local OpenAI usage history? This does not affect OpenAI billing.')) return;
+  store.apiUsage = [];
+  saveStore();
+  renderApiUsage();
+});
+
 // ==================== Export / Import JSON ====================
 function exportJson() {
   const payload = {
@@ -2220,6 +2428,7 @@ function exportJson() {
     items:    store.items,
     classes:  store.classes,
     sessions: store.sessions,
+    apiUsage: store.apiUsage || [],
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -2261,8 +2470,10 @@ Continue?`;
     store.items    = nextStore.items;
     store.classes  = nextStore.classes;
     store.sessions = nextStore.sessions;
+    store.apiUsage = nextStore.apiUsage;
     saveStore();
     renderItemList(); renderSpotList(); renderClassList();
+    renderApiUsage();
     renderDashboard();
     alert('Import complete.');
   };

@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$port = 5175
+$port = if ($env:PORT) { [int]$env:PORT } else { 5175 }
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$port/")
 $listener.Start()
@@ -18,10 +18,222 @@ $mime = @{
   ".txt"  = "text/plain; charset=utf-8"
 }
 
+function Write-JsonResponse {
+  param(
+    [System.Net.HttpListenerContext]$Context,
+    [int]$StatusCode,
+    [object]$Data
+  )
+  $json = $Data | ConvertTo-Json -Depth 30
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+  $Context.Response.StatusCode = $StatusCode
+  $Context.Response.ContentType = "application/json; charset=utf-8"
+  $Context.Response.Headers.Add("Cache-Control", "no-store")
+  $Context.Response.ContentLength64 = $bytes.Length
+  $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+}
+
+function Get-RequestJson {
+  param([System.Net.HttpListenerRequest]$Request)
+  $reader = New-Object System.IO.StreamReader($Request.InputStream, $Request.ContentEncoding)
+  try {
+    $body = $reader.ReadToEnd()
+  } finally {
+    $reader.Close()
+  }
+  if (-not $body) { return $null }
+  return $body | ConvertFrom-Json
+}
+
+function Get-OpenAIConfig {
+  $configPath = Join-Path $root "config.local.json"
+  $config = [pscustomobject]@{}
+  if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+  }
+  $apiKey = if ($config.openaiApiKey) { $config.openaiApiKey } elseif ($config.apiKey) { $config.apiKey } else { $env:OPENAI_API_KEY }
+  if (-not $apiKey) {
+    throw "Missing OpenAI API key. Create config.local.json from config.local.example.json, or set OPENAI_API_KEY."
+  }
+  return [pscustomobject]@{
+    ApiKey = $apiKey
+    Model = if ($config.model) { $config.model } else { "gpt-5.4-mini" }
+  }
+}
+
+function Get-ResponseOutputText {
+  param([object]$Response)
+  if ($Response.output_text) { return [string]$Response.output_text }
+  foreach ($out in @($Response.output)) {
+    foreach ($content in @($out.content)) {
+      if ($content.text) { return [string]$content.text }
+    }
+  }
+  return ""
+}
+
+function Invoke-SmartScan {
+  param([object]$Scan)
+
+  $cfg = Get-OpenAIConfig
+  if (-not $Scan.imageDataUrl -or -not ($Scan.imageDataUrl -match '^data:image/(png|jpeg|jpg|webp);base64,')) {
+    throw "Smart Scan needs a PNG/JPEG/WEBP data URL."
+  }
+  $items = @($Scan.items) | Where-Object { $_.name }
+  if (-not $items.Count) { throw "No linked items were provided for Smart Scan." }
+
+  $itemNames = ($items | ForEach-Object {
+    $idx = if ($_.refIndex) { [int]$_.refIndex } else { [array]::IndexOf($items, $_) + 1 }
+    "- Reference #$idx | itemId=$($_.id) | itemName=$($_.name)"
+  }) -join "`n"
+  $itemIdEnum = @("") + @($items | ForEach-Object { [string]$_.id } | Select-Object -Unique)
+  $itemNameEnum = @("") + @($items | ForEach-Object { [string]$_.name } | Select-Object -Unique)
+  $prompt = @"
+Read this Black Desert Online grind tracker screenshot or cropped loot row.
+
+Use ONLY these local Settings items:
+$itemNames
+
+After the screenshot, reference images are provided for linked local Settings items when available.
+You are fully responsible for reading the loot row. Do not assume any client OCR, number guesses, item order, or local icon matching.
+Find the visible "Acquired Loot" row or the selected loot-row crop.
+Match each screenshot slot visually against the provided local Settings reference item icons first; do not rely only on item-name memory.
+When a screenshot icon matches a reference icon, return that exact itemId and itemName from the list.
+Reference images are NOT in screenshot slot order. Do not map the first screenshot slot to the first reference image or the last screenshot slot to the last reference image.
+The screenshot slot order is only the left-to-right visual order inside the uploaded loot-row screenshot.
+
+Return one row for every visible item slot in the selected loot row, including unknown or unlinked items.
+slotIndex is 1 for the leftmost visible item icon among ALL visible icons, 2 for the next, and so on.
+If the icon clearly matches one of the local Settings reference items, use that exact itemId and itemName.
+If the icon does not clearly match a local Settings reference item, set itemId and itemName to empty strings and confidence to 0.
+Do not sort by item name, item type, or quantity.
+Read the stack quantity from the bottom-left of that exact same item icon. Do not borrow a quantity from another slot.
+The leftmost slot can have a 4-6 digit trash-loot quantity such as 22358; read all digits.
+If a quantity is unreadable, use 0.
+Return bbox as integer coordinates from 0 to 1000 around the full item icon, relative to the uploaded image or crop. Use x0/y0 for top-left and x1/y1 for bottom-right.
+Use confidence from 0 to 1 for the item-icon match.
+If grind time is visible, return it; otherwise set detected=false and hours/minutes/seconds to 0.
+"@
+
+  $schema = @{
+    type = "object"
+    additionalProperties = $false
+    required = @("time", "loot")
+    properties = @{
+      time = @{
+        type = "object"
+        additionalProperties = $false
+        required = @("detected", "hours", "minutes", "seconds")
+        properties = @{
+          detected = @{ type = "boolean" }
+          hours = @{ type = "integer" }
+          minutes = @{ type = "integer" }
+          seconds = @{ type = "integer" }
+        }
+      }
+      loot = @{
+        type = "array"
+        items = @{
+          type = "object"
+          additionalProperties = $false
+          required = @("slotIndex", "itemId", "itemName", "qty", "confidence", "bbox")
+          properties = @{
+            slotIndex = @{ type = "integer" }
+            itemId = @{ type = "string" }
+            itemName = @{ type = "string" }
+            qty = @{ type = "integer" }
+            confidence = @{ type = "number" }
+            bbox = @{
+              type = "object"
+              additionalProperties = $false
+              required = @("x0", "y0", "x1", "y1")
+              properties = @{
+                x0 = @{ type = "integer" }
+                y0 = @{ type = "integer" }
+                x1 = @{ type = "integer" }
+                y1 = @{ type = "integer" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  $schema["properties"]["loot"]["items"]["properties"]["itemId"]["enum"] = $itemIdEnum
+  $schema["properties"]["loot"]["items"]["properties"]["itemName"]["enum"] = $itemNameEnum
+
+  $content = New-Object System.Collections.ArrayList
+  [void]$content.Add(@{ type = "input_text"; text = $prompt })
+  [void]$content.Add(@{ type = "input_image"; image_url = [string]$Scan.imageDataUrl; detail = "high" })
+  $refItems = @($items | Where-Object {
+    $_.imageUrl -and ([string]$_.imageUrl -match '^(data:image/(png|jpeg|jpg|webp);base64,|https?://)')
+  } | Select-Object -First 24)
+  if ($refItems.Count) {
+    [void]$content.Add(@{ type = "input_text"; text = "Reference item icons from the selected spot Settings:" })
+    foreach ($item in $refItems) {
+      $idx = if ($item.refIndex) { [int]$item.refIndex } else { [array]::IndexOf($items, $item) + 1 }
+      [void]$content.Add(@{ type = "input_text"; text = "Reference #$idx itemId: $($item.id) itemName: $($item.name)" })
+      [void]$content.Add(@{ type = "input_image"; image_url = [string]$item.imageUrl; detail = "low" })
+    }
+  }
+
+  $payload = @{
+    model = $cfg.Model
+    input = @(
+      @{
+        role = "user"
+        content = @($content)
+      }
+    )
+    text = @{
+      format = @{
+        type = "json_schema"
+        name = "bdo_grind_scan"
+        strict = $true
+        schema = $schema
+      }
+    }
+    max_output_tokens = 1200
+  }
+
+  $headers = @{
+    Authorization = "Bearer $($cfg.ApiKey)"
+    "Content-Type" = "application/json"
+  }
+  $body = $payload | ConvertTo-Json -Depth 40
+  $apiResponse = Invoke-RestMethod -Method Post -Uri "https://api.openai.com/v1/responses" -Headers $headers -Body $body
+  $text = Get-ResponseOutputText $apiResponse
+  if (-not $text) { throw "OpenAI returned no text output." }
+  $result = $text | ConvertFrom-Json
+  return [pscustomobject]@{
+    ok = $true
+    provider = "openai"
+    model = $cfg.Model
+    result = $result
+    usage = $apiResponse.usage
+  }
+}
+
 while ($listener.IsListening) {
   try {
     $ctx = $listener.GetContext()
     $path = $ctx.Request.Url.LocalPath
+    if ($path -eq "/api/smart-scan") {
+      try {
+        if ($ctx.Request.HttpMethod -ne "POST") {
+          Write-JsonResponse $ctx 405 @{ ok = $false; error = "Use POST for /api/smart-scan." }
+        } else {
+          $scan = Get-RequestJson $ctx.Request
+          $result = Invoke-SmartScan $scan
+          Write-JsonResponse $ctx 200 $result
+        }
+      } catch {
+        Write-JsonResponse $ctx 500 @{ ok = $false; error = $_.Exception.Message }
+      }
+      $ctx.Response.Close()
+      continue
+    }
     if ($path -eq "/" -or $path -eq "") { $path = "/index.html" }
     $file = Join-Path $root $path.TrimStart("/")
     if (Test-Path -LiteralPath $file -PathType Leaf) {

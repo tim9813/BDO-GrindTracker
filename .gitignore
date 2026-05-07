@@ -8,6 +8,7 @@ Desktop.ini
 # Local environment and logs
 .env
 .env.*
+config.local.json
 *.log
 
 # User data exports
