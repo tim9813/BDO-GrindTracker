@@ -81,8 +81,6 @@ function Invoke-SmartScan {
   }
   $items = @($Scan.items) | Where-Object { $_.name }
   if (-not $items.Count) { throw "No linked items were provided for Smart Scan." }
-  $referenceSheetDataUrl = [string]$Scan.referenceSheetDataUrl
-  $hasReferenceSheet = $referenceSheetDataUrl -match '^data:image/(png|jpeg|jpg|webp);base64,'
 
   $itemNames = ($items | ForEach-Object {
     $idx = if ($_.refIndex) { [int]$_.refIndex } else { [array]::IndexOf($items, $_) + 1 }
@@ -105,9 +103,8 @@ Read this Black Desert Online grind tracker screenshot or cropped loot row.
 Use ONLY these local Settings item names:
 $itemNames
 
-A numbered local Settings reference sheet may be provided after the screenshot. It shows the exact linked item icons with yellow Reference # labels and local item names.
-Use that reference sheet as the primary source for item matching.
-Additional close-up reference images may also be provided. They use the same Reference # labels and are only extra visual help.
+After the screenshot, reference images are provided for linked local Settings items when available.
+Match each screenshot slot visually against those reference item icons first; do not rely only on item-name memory.
 When a screenshot icon matches a reference icon, return that exact reference refIndex and itemName.
 Reference images are NOT in screenshot slot order. Do not map the first screenshot slot to the first reference image or the last screenshot slot to the last reference image.
 The screenshot slot order is only the left-to-right visual order inside the uploaded loot-row screenshot.
@@ -167,20 +164,11 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
   $content = New-Object System.Collections.ArrayList
   [void]$content.Add(@{ type = "input_text"; text = $prompt })
   [void]$content.Add(@{ type = "input_image"; image_url = [string]$Scan.imageDataUrl; detail = "high" })
-  if ($hasReferenceSheet) {
-    [void]$content.Add(@{ type = "input_text"; text = "Numbered local Settings reference sheet. Use the yellow Reference # labels as refIndex values." })
-    [void]$content.Add(@{ type = "input_image"; image_url = $referenceSheetDataUrl; detail = "high" })
-  }
   $refItems = @($items | Where-Object {
     $_.imageUrl -and ([string]$_.imageUrl -match '^(data:image/(png|jpeg|jpg|webp);base64,|https?://)')
   } | Select-Object -First 24)
   if ($refItems.Count) {
-    $refIntro = if ($hasReferenceSheet) {
-      "Additional close-up reference item icons from the selected spot Settings. Use these only to confirm the same Reference # labels."
-    } else {
-      "Reference item icons from the selected spot Settings:"
-    }
-    [void]$content.Add(@{ type = "input_text"; text = $refIntro })
+    [void]$content.Add(@{ type = "input_text"; text = "Reference item icons from the selected spot Settings:" })
     foreach ($item in $refItems) {
       $idx = if ($item.refIndex) { [int]$item.refIndex } else { [array]::IndexOf($items, $item) + 1 }
       [void]$content.Add(@{ type = "input_text"; text = "Reference #$idx itemName: $($item.name)" })
