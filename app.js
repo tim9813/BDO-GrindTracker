@@ -6,7 +6,7 @@ const TAX = 0.155;
 function loadStore() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) return { spots: [], items: [], classes: [], sessions: [] };
+    if (!raw) return { spots: [], items: [], classes: [], sessions: [], apiUsage: [] };
     const storeData = sanitizeStoreData(migrateStoreData(JSON.parse(raw)));
     const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
     if (legacyRaw && raw !== legacyRaw) {
@@ -14,7 +14,7 @@ function loadStore() {
     }
     return storeData;
   } catch {
-    return { spots: [], items: [], classes: [], sessions: [] };
+    return { spots: [], items: [], classes: [], sessions: [], apiUsage: [] };
   }
 }
 function saveStore() { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
@@ -64,6 +64,7 @@ function migrateStoreData(data) {
     items,
     classes: Array.isArray(p.classes) ? p.classes : [],
     sessions: Array.isArray(p.sessions) ? p.sessions : [],
+    apiUsage: Array.isArray(p.apiUsage) ? p.apiUsage : [],
   };
 }
 
@@ -220,7 +221,29 @@ function sanitizeStoreData(data) {
       };
     }));
 
-  return { spots, items, classes, sessions };
+  const apiUsage = (Array.isArray(p.apiUsage) ? p.apiUsage : [])
+    .filter(u => u && typeof u === 'object')
+    .map(u => {
+      const createdAt = Number.isFinite(new Date(u.createdAt).getTime()) ? new Date(u.createdAt).toISOString() : new Date().toISOString();
+      const inputTokens = Math.floor(clampNumber(u.inputTokens ?? u.input_tokens, 0, Number.MAX_SAFE_INTEGER));
+      const outputTokens = Math.floor(clampNumber(u.outputTokens ?? u.output_tokens, 0, Number.MAX_SAFE_INTEGER));
+      const totalTokens = Math.floor(clampNumber(u.totalTokens ?? u.total_tokens, 0, Number.MAX_SAFE_INTEGER)) || inputTokens + outputTokens;
+      return {
+        id: safeId(u.id, 'usage', new Map(), usedIds),
+        createdAt,
+        provider: safeText(u.provider || 'openai', 40),
+        model: safeText(u.model, 80) || 'unknown',
+        spotName: safeText(u.spotName, 120),
+        itemCount: Math.floor(clampNumber(u.itemCount, 0, Number.MAX_SAFE_INTEGER)),
+        inputTokens,
+        outputTokens,
+        totalTokens,
+      };
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 500);
+
+  return { spots, items, classes, sessions, apiUsage };
 }
 
 function colorFor(str) {
@@ -293,6 +316,37 @@ function fmtHours(totalHours) {
   const m = totalMinutes % 60;
   if (h === 0) return `${m}m`;
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function fmtNumber(n) {
+  return Math.round(Number(n) || 0).toLocaleString('en-US');
+}
+
+const OPENAI_TOKEN_PRICES = {
+  'gpt-4.1': { input: 2.00, output: 8.00 },
+  'gpt-4.1-mini': { input: 0.40, output: 1.60 },
+  'gpt-4.1-nano': { input: 0.10, output: 0.40 },
+  'gpt-4o': { input: 2.50, output: 10.00 },
+  'gpt-4o-mini': { input: 0.15, output: 0.60 },
+};
+
+function priceForOpenAiModel(model) {
+  const id = String(model || '').toLowerCase();
+  const keys = Object.keys(OPENAI_TOKEN_PRICES).sort((a, b) => b.length - a.length);
+  return keys.find(k => id === k || id.startsWith(`${k}-`));
+}
+
+function estimateOpenAiCost(entry) {
+  const modelKey = priceForOpenAiModel(entry.model);
+  if (!modelKey) return null;
+  const price = OPENAI_TOKEN_PRICES[modelKey];
+  return ((entry.inputTokens || 0) * price.input + (entry.outputTokens || 0) * price.output) / 1_000_000;
+}
+
+function fmtUsd(value) {
+  if (value == null || !isFinite(value)) return 'n/a';
+  if (value > 0 && value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
 }
 
 function fmtSessionDuration(hours = 0, mins = 0, secs = 0) {
@@ -378,7 +432,7 @@ function setView(name) {
   $$('section[data-pane]').forEach(s => s.classList.toggle('hidden', s.dataset.pane !== name));
   $('#addBtn').style.display = name === 'settings' ? 'none' : '';
   $('#rangeTabsWrap').style.display = name === 'settings' ? 'none' : '';
-  if (name === 'settings') { renderItemList(); renderSpotList(); renderClassList(); }
+  if (name === 'settings') { renderItemList(); renderSpotList(); renderClassList(); renderApiUsage(); }
   else renderDashboard();
 }
 $$('.view-tab').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -1367,6 +1421,7 @@ async function runSmartScan() {
       throw new Error(payload?.error || `Smart Scan failed (${res.status})`);
     }
     applySmartScanResult(payload.result);
+    recordOpenAiUsage(payload, _ocrDetections.length);
     const usage = payload.usage?.total_tokens ? ` (${payload.usage.total_tokens} tokens)` : '';
     setSmartScanStatus(`Smart Scan complete: ${_ocrDetections.length} item${_ocrDetections.length === 1 ? '' : 's'}${usage}.`);
     if (!_ocrDetections.length) alert('Smart Scan did not match any visible loot to this spot\'s linked items.');
@@ -2273,6 +2328,74 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') $$('.fixed.inset-0:not(.hidden)').forEach(m => m.classList.add('hidden'));
 });
 
+// ==================== OpenAI usage ====================
+function recordOpenAiUsage(payload, itemCount = 0) {
+  const usage = payload?.usage || {};
+  const inputTokens = Math.floor(clampNumber(usage.input_tokens ?? usage.inputTokens, 0, Number.MAX_SAFE_INTEGER));
+  const outputTokens = Math.floor(clampNumber(usage.output_tokens ?? usage.outputTokens, 0, Number.MAX_SAFE_INTEGER));
+  const totalTokens = Math.floor(clampNumber(usage.total_tokens ?? usage.totalTokens, 0, Number.MAX_SAFE_INTEGER)) || inputTokens + outputTokens;
+  const entry = {
+    id: uid(),
+    createdAt: new Date().toISOString(),
+    provider: safeText(payload?.provider || 'openai', 40),
+    model: safeText(payload?.model, 80) || 'unknown',
+    spotName: safeText(sessionContext?.spot?.name, 120),
+    itemCount: Math.floor(clampNumber(itemCount, 0, Number.MAX_SAFE_INTEGER)),
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
+  store.apiUsage = [entry, ...(store.apiUsage || [])].slice(0, 500);
+  saveStore();
+  renderApiUsage();
+  return entry;
+}
+
+function renderApiUsage() {
+  const list = Array.isArray(store.apiUsage) ? store.apiUsage : [];
+  const totalInput = list.reduce((sum, u) => sum + (u.inputTokens || 0), 0);
+  const totalOutput = list.reduce((sum, u) => sum + (u.outputTokens || 0), 0);
+  const totalTokens = list.reduce((sum, u) => sum + (u.totalTokens || 0), 0);
+  const priced = list
+    .map(estimateOpenAiCost)
+    .filter(v => v != null && isFinite(v));
+  const totalCost = priced.reduce((sum, v) => sum + v, 0);
+
+  $('#apiUsageScans') && ($('#apiUsageScans').textContent = fmtNumber(list.length));
+  $('#apiUsageInput') && ($('#apiUsageInput').textContent = fmtNumber(totalInput));
+  $('#apiUsageOutput') && ($('#apiUsageOutput').textContent = fmtNumber(totalOutput));
+  $('#apiUsageTotal') && ($('#apiUsageTotal').textContent = `Total tokens: ${fmtNumber(totalTokens)}`);
+  $('#apiUsageCost') && ($('#apiUsageCost').textContent = priced.length ? fmtUsd(totalCost) : 'n/a');
+
+  const recent = $('#apiUsageRecent');
+  if (!recent) return;
+  if (!list.length) {
+    recent.innerHTML = `<div class="px-3 py-4 text-sm text-mute2 text-center">No Smart Scan usage recorded yet</div>`;
+    return;
+  }
+  recent.innerHTML = list.slice(0, 6).map(u => {
+    const cost = estimateOpenAiCost(u);
+    return `
+      <div class="grid grid-cols-[1fr_auto] md:grid-cols-[1fr_auto_auto_auto] gap-2 items-center px-3 py-2 border-b border-border last:border-b-0 text-xs">
+        <div class="min-w-0">
+          <div class="text-sm truncate">${escapeHtml(u.spotName || 'Smart Scan')}</div>
+          <div class="text-mute2">${new Date(u.createdAt).toLocaleString()} - ${escapeHtml(u.model || 'unknown model')}</div>
+        </div>
+        <div class="text-right tabular-nums">${fmtNumber(u.totalTokens)} tokens</div>
+        <div class="hidden md:block text-right tabular-nums text-mute2">${fmtNumber(u.itemCount)} item${u.itemCount === 1 ? '' : 's'}</div>
+        <div class="hidden md:block text-right tabular-nums text-accent2">${fmtUsd(cost)}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+$('#apiUsageResetBtn')?.addEventListener('click', () => {
+  if (!confirm('Reset local OpenAI usage history? This does not affect OpenAI billing.')) return;
+  store.apiUsage = [];
+  saveStore();
+  renderApiUsage();
+});
+
 // ==================== Export / Import JSON ====================
 function exportJson() {
   const payload = {
@@ -2282,6 +2405,7 @@ function exportJson() {
     items:    store.items,
     classes:  store.classes,
     sessions: store.sessions,
+    apiUsage: store.apiUsage || [],
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -2323,8 +2447,10 @@ Continue?`;
     store.items    = nextStore.items;
     store.classes  = nextStore.classes;
     store.sessions = nextStore.sessions;
+    store.apiUsage = nextStore.apiUsage;
     saveStore();
     renderItemList(); renderSpotList(); renderClassList();
+    renderApiUsage();
     renderDashboard();
     alert('Import complete.');
   };

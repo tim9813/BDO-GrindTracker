@@ -10,6 +10,7 @@ Static Black Desert Online grind-session tracker for comparing silver, hours, cl
 - Import and export tracker data as JSON
 - Scan screenshots locally with bundled Tesseract.js assets
 - Optional OpenAI Smart Scan for screenshot loot rows
+- Local OpenAI Smart Scan usage tracking in Settings
 
 ## Run Locally
 
@@ -45,3 +46,5 @@ Smart Scan is optional. It sends only the uploaded screenshot or selected loot-r
 `config.local.json` is ignored by git and should not be committed. Keep using `.\serve.ps1`; Smart Scan will not work by opening `index.html` directly because the API key is kept in the local server.
 
 When moving the app folder to another computer, copy `config.local.json` too if you want Smart Scan to work there.
+
+The Settings page shows local Smart Scan usage based on token counts returned by successful OpenAI calls. This is useful for estimating app usage, but OpenAI's Usage Dashboard or Costs API remains the source of truth for billing across all apps and keys.
