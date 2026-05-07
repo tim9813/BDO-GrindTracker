@@ -1046,7 +1046,7 @@ function renderLootGrid() {
         <div class="text-[10px] text-mute2">${fmtSilver(it.price || 0)}</div>
       </div>
       <input type="number" min="0" step="1" value="0" data-loot="${it.id}"
-        class="w-16 bg-bg border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:border-accent">
+        class="w-20 bg-bg border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:border-accent">
     </div>
   `).join('');
 

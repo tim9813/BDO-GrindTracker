@@ -9,6 +9,7 @@ Desktop.ini
 .env
 .env.*
 config.local.json
+serve.pid
 *.log
 
 # User data exports

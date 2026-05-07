@@ -1,6 +1,38 @@
+param(
+  [switch]$Stop,
+  [switch]$Foreground
+)
+
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$pidFile = Join-Path $root "serve.pid"
 $port = if ($env:PORT) { [int]$env:PORT } else { 5175 }
+
+if ($Stop) {
+  if (Test-Path -LiteralPath $pidFile) {
+    $bgPid = [int](Get-Content -LiteralPath $pidFile -Raw).Trim()
+    try {
+      Stop-Process -Id $bgPid -Force
+      Write-Host "Server stopped (PID: $bgPid)."
+    } catch {
+      Write-Host "Process $bgPid not found - server may have already stopped."
+    }
+    Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+  } else {
+    Write-Host "No running server found."
+  }
+  exit
+}
+
+if (-not $Foreground -and -not $env:BDO_SERVE_BG) {
+  $env:BDO_SERVE_BG = "1"
+  $scriptPath = $MyInvocation.MyCommand.Definition
+  $proc = Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File ""$scriptPath""" -PassThru
+  $proc.Id | Set-Content -LiteralPath $pidFile -Encoding utf8
+  Write-Host "Server started in background on http://localhost:$port/ (PID: $($proc.Id))."
+  Write-Host "Run .\serve.ps1 -Stop to stop the server."
+  exit
+}
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$port/")
 $listener.Start()
