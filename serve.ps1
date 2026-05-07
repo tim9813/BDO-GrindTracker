@@ -83,7 +83,7 @@ function Invoke-SmartScan {
   if (-not $items.Count) { throw "No linked items were provided for Smart Scan." }
 
   $itemNames = ($items | ForEach-Object { "- $($_.name)" }) -join "`n"
-  $itemNameEnum = @($items | ForEach-Object { [string]$_.name } | Select-Object -Unique)
+  $itemNameEnum = @("") + @($items | ForEach-Object { [string]$_.name } | Select-Object -Unique)
   $slotHints = @($Scan.slots) | Where-Object { $_.slotIndex }
   $slotSection = if ($slotHints.Count) {
     ($slotHints | Sort-Object { [int]$_.slotIndex } | ForEach-Object {
@@ -103,9 +103,10 @@ $itemNames
 Client-detected slots from left to right:
 $slotSection
 
-Return rows only for visible item slots whose icon clearly matches one of the local Settings item names.
-Omit visible slots that are not in the local Settings item list or are unclear. Do not force the closest item name.
-slotIndex is 1 for the leftmost visible item icon among ALL visible icons, 2 for the next, and so on, even when omitted slots exist.
+Return one row for every visible item slot in the selected loot row, including unknown or unlinked items.
+slotIndex is 1 for the leftmost visible item icon among ALL visible icons, 2 for the next, and so on.
+If the icon clearly matches one of the local Settings item names, use that exact itemName.
+If the icon does not clearly match a local Settings item, set itemName to an empty string and confidence to 0.
 Do not sort by item name, item type, or quantity.
 Read the stack quantity from the bottom-left of that exact same item icon. Do not borrow a quantity from another slot.
 The leftmost slot can have a 4-6 digit trash-loot quantity such as 22358; read all digits.

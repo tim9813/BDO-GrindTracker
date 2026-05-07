@@ -1145,6 +1145,7 @@ let _tesseractScriptPromise = null;
 let _ocrWorker = null;
 let _ocrDetections = [];   // [{ text, qty, bbox, itemId }]
 let _ocrLocalDetections = [];
+let _ocrOverlayDetections = [];
 let _ocrSlots = [];
 let _ocrImgNaturalSize = { w: 0, h: 0 };
 let _ocrImageDataUrl = null;
@@ -1274,6 +1275,7 @@ async function recognizeGrindTime(worker, img, fullText = '') {
 function clearOcr() {
   _ocrDetections = [];
   _ocrLocalDetections = [];
+  _ocrOverlayDetections = [];
   _ocrSlots = [];
   _ocrImageDataUrl = null;
   _ocrSelection = null;
@@ -1442,6 +1444,24 @@ function applySmartScanResult(scan, baseDetections = null) {
     ? _ocrSlots
     : sortDetectionsByVisualOrder(baseDetections || _ocrLocalDetections || [])
       .map((d, i) => ({ slotIndex: i + 1, bbox: d.bbox }));
+
+  _ocrOverlayDetections = rows.map(row => {
+    const slot = slots.find(s => s.slotIndex === row.slotIndex);
+    const item = matchSmartScanItem(row.itemName, items);
+    const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
+    const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
+    if (!slot || qty <= 0) return null;
+    return {
+      text: String(qty),
+      qty,
+      bbox: slot.bbox || null,
+      itemId: item && confidence >= SMART_SCAN_MIN_CONFIDENCE ? item.id : null,
+      matchedName: item?.name || row.itemName || '',
+      score: confidence,
+      source: 'openai-smart-overlay',
+      slotIndex: row.slotIndex,
+    };
+  }).filter(Boolean);
 
   _ocrDetections = rows.map(row => {
     const item = matchSmartScanItem(row.itemName, items);
@@ -2109,7 +2129,7 @@ function drawOcrOverlay(extra) {
   // Detection boxes
   ctx.lineWidth = 2;
   ctx.font = 'bold 12px ui-sans-serif, system-ui, sans-serif';
-  for (const d of _ocrDetections) {
+  for (const d of (_ocrOverlayDetections.length ? _ocrOverlayDetections : _ocrDetections)) {
     if (!d.bbox) continue;
     const { x0, y0, x1, y1 } = d.bbox;
     const x = x0 * sx, y = y0 * sy;
