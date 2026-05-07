@@ -1433,37 +1433,34 @@ function sortedSmartRows(scan) {
     .sort((a, b) => (a.slotIndex || a.originalIndex + 1) - (b.slotIndex || b.originalIndex + 1));
 }
 
-const LIST_ITEM_MIN_CONFIDENCE = 0.66;
+const SMART_SCAN_MIN_CONFIDENCE = 0.65;
 
 function applySmartScanResult(scan, baseDetections = null) {
   const items = getSpotItems(sessionContext.spot);
   const rows = sortedSmartRows(scan).filter(row => row.slotIndex > 0);
-  const rowsBySlot = new Map(rows.map(row => [row.slotIndex, row]));
   const slots = _ocrSlots.length
     ? _ocrSlots
     : sortDetectionsByVisualOrder(baseDetections || _ocrLocalDetections || [])
       .map((d, i) => ({ slotIndex: i + 1, bbox: d.bbox }));
 
-  _ocrDetections = slots.map(slot => {
-    const row = rowsBySlot.get(slot.slotIndex);
-    const smartItem = row ? matchSmartScanItem(row.itemName, items) : null;
-    const confidence = Math.max(0, Math.min(1, Number(row?.confidence) || 0));
-    const item = smartItem && confidence >= LIST_ITEM_MIN_CONFIDENCE ? smartItem : null;
-    const localRow = detectionForSlot(slot);
-    const smartQty = Math.max(0, Math.floor(Number(row?.qty) || 0));
-    const localQty = Math.max(0, Math.floor(Number(localRow?.qty) || 0));
-    const qty = smartQty || localQty;
+  _ocrDetections = rows.map(row => {
+    const item = matchSmartScanItem(row.itemName, items);
+    const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
+    if (!item || confidence < SMART_SCAN_MIN_CONFIDENCE) return null;
+
+    const slot = slots.find(s => s.slotIndex === row.slotIndex);
+    const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
     return {
       text: qty > 0 ? String(qty) : '',
       qty,
-      bbox: slot.bbox || null,
-      itemId: item?.id || null,
-      matchedName: item?.name || row?.itemName || '',
+      bbox: slot?.bbox || null,
+      itemId: item.id,
+      matchedName: item.name,
       score: confidence,
-      source: item ? 'openai-smart-scan' : 'detected-slot',
-      slotIndex: slot.slotIndex,
+      source: 'openai-smart-scan',
+      slotIndex: row.slotIndex,
     };
-  }).filter(d => d.qty > 0 || d.itemId);
+  }).filter(Boolean);
 
   if (scan?.time?.detected) {
     _ocrDetectedTime = {
@@ -2046,7 +2043,7 @@ function renderOcrList() {
     const mappedItem = d.itemId ? items.find(it => it.id === d.itemId) : null;
     const preview = mappedItem
       ? itemIconHTML(mappedItem, 52)
-      : `<div class="w-[52px] h-[52px] rounded-md bg-bg border border-border flex items-center justify-center text-[10px] text-mute2">#${escapeHtml(d.slotIndex || i + 1)}</div>`;
+      : `<div class="w-[52px] h-[52px] rounded-md bg-bg border border-border"></div>`;
     const itemOptionsRendered = items.map(it =>
       `<option value="${it.id}" ${d.itemId === it.id ? 'selected' : ''}>${escapeHtml(it.name)}</option>`
     ).join('');
