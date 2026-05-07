@@ -100,6 +100,10 @@ Read this Black Desert Online grind tracker screenshot or cropped loot row.
 Use ONLY these local Settings item names:
 $itemNames
 
+After the screenshot, reference images are provided for linked local Settings items when available.
+Match each screenshot slot visually against those reference item icons first; do not rely only on item-name memory.
+When a screenshot icon matches a reference icon, return that exact reference itemName.
+
 Client-detected slots from left to right:
 $slotSection
 
@@ -150,15 +154,26 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
 
   $schema["properties"]["loot"]["items"]["properties"]["itemName"]["enum"] = $itemNameEnum
 
+  $content = New-Object System.Collections.ArrayList
+  [void]$content.Add(@{ type = "input_text"; text = $prompt })
+  [void]$content.Add(@{ type = "input_image"; image_url = [string]$Scan.imageDataUrl; detail = "high" })
+  $refItems = @($items | Where-Object {
+    $_.imageUrl -and ([string]$_.imageUrl -match '^(data:image/(png|jpeg|jpg|webp);base64,|https?://)')
+  } | Select-Object -First 24)
+  if ($refItems.Count) {
+    [void]$content.Add(@{ type = "input_text"; text = "Reference item icons from the selected spot Settings:" })
+    foreach ($item in $refItems) {
+      [void]$content.Add(@{ type = "input_text"; text = "Reference itemName: $($item.name)" })
+      [void]$content.Add(@{ type = "input_image"; image_url = [string]$item.imageUrl; detail = "low" })
+    }
+  }
+
   $payload = @{
     model = $cfg.Model
     input = @(
       @{
         role = "user"
-        content = @(
-          @{ type = "input_text"; text = $prompt },
-          @{ type = "input_image"; image_url = [string]$Scan.imageDataUrl; detail = "high" }
-        )
+        content = @($content)
       }
     )
     text = @{

@@ -1521,7 +1521,11 @@ async function runSmartScan() {
       body: JSON.stringify({
         imageDataUrl,
         spotName: sessionContext.spot.name,
-        items: items.map(it => ({ id: it.id, name: it.name })),
+        items: items.map(it => ({
+          id: it.id,
+          name: it.name,
+          imageUrl: normalizeImageUrl(it.imageUrl || it.iconUrl || ''),
+        })),
         slots: smartScanSlotHints(),
       }),
     });
