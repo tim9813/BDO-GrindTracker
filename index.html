@@ -486,6 +486,11 @@
             <button id="sessOcrClearSel" class="h-7 px-3 bg-panel2 border border-border hover:text-white rounded-md text-mute">Clear selection</button>
           </div>
 
+          <div class="flex flex-wrap items-center gap-2 bg-panel border border-border rounded-md px-3 py-2 text-xs">
+            <button id="sessOcrSmartScan" class="h-8 px-3 bg-accent2 hover:brightness-110 rounded-md font-medium text-white">Smart Scan</button>
+            <span id="sessOcrSmartStatus" class="text-mute2">Uses OpenAI when <code>config.local.json</code> is set.</span>
+          </div>
+
           <div id="sessOcrList" class="space-y-1.5"></div>
           <div class="flex items-center justify-between pt-1">
             <div class="text-xs text-mute2" id="sessOcrSummary"></div>

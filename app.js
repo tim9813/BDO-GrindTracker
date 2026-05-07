@@ -1229,6 +1229,7 @@ function clearOcr() {
   $('#sessOcrFile').value = '';
   $('#sessOcrTime')?.classList.add('hidden');
   $('#sessOcrSelToolbar')?.classList.add('hidden');
+  setSmartScanStatus('Uses OpenAI when config.local.json is set.');
 }
 
 function setOcrLoading(text) {
@@ -1245,6 +1246,138 @@ async function fileToDataUrl(file) {
     r.onerror = () => reject(r.error);
     r.readAsDataURL(file);
   });
+}
+
+function setSmartScanStatus(text, isError = false) {
+  const el = $('#sessOcrSmartStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('text-red-300', isError);
+  el.classList.toggle('text-mute2', !isError);
+}
+
+function imageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+async function smartScanImageDataUrl() {
+  if (!_ocrImageDataUrl) return null;
+  const img = await imageFromDataUrl(_ocrImageDataUrl);
+  const crop = _ocrSelection
+    ? {
+        x: Math.max(0, Math.floor(_ocrSelection.x)),
+        y: Math.max(0, Math.floor(_ocrSelection.y)),
+        w: Math.max(1, Math.floor(_ocrSelection.w)),
+        h: Math.max(1, Math.floor(_ocrSelection.h)),
+      }
+    : { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+
+  const maxSide = 1400;
+  const scale = Math.min(1, maxSide / Math.max(crop.w, crop.h));
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(crop.w * scale));
+  cv.height = Math.max(1, Math.round(crop.h * scale));
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, cv.width, cv.height);
+  return cv.toDataURL('image/png');
+}
+
+function normalizeScanName(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function matchSmartScanItem(name, items) {
+  const wanted = normalizeScanName(name);
+  if (!wanted) return null;
+  return items.find(it => normalizeScanName(it.name) === wanted) ||
+    items.find(it => {
+      const n = normalizeScanName(it.name);
+      return n && (n.includes(wanted) || wanted.includes(n));
+    }) ||
+    null;
+}
+
+function applySmartScanResult(scan) {
+  const items = getSpotItems(sessionContext.spot);
+  const rows = Array.isArray(scan?.loot) ? scan.loot : [];
+  _ocrDetections = rows.map(row => {
+    const item = matchSmartScanItem(row.itemName, items);
+    if (!item) return null;
+    const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
+    return {
+      text: qty > 0 ? String(qty) : '',
+      qty,
+      bbox: null,
+      itemId: item.id,
+      matchedName: item.name,
+      score: Number(row.confidence) || null,
+      source: 'openai-smart-scan',
+    };
+  }).filter(Boolean);
+
+  if (scan?.time?.detected) {
+    _ocrDetectedTime = {
+      hours: Math.max(0, Math.floor(Number(scan.time.hours) || 0)),
+      mins: Math.max(0, Math.min(59, Math.floor(Number(scan.time.minutes) || 0))),
+      secs: Math.max(0, Math.min(59, Math.floor(Number(scan.time.seconds) || 0))),
+    };
+    $('#sessOcrTime').classList.remove('hidden');
+    $('#sessOcrTimeText').textContent = formatDetectedTime(_ocrDetectedTime);
+  }
+
+  renderOcrList();
+  drawOcrOverlay();
+}
+
+async function runSmartScan() {
+  if (!_ocrImageDataUrl || !sessionContext?.spot) {
+    alert('Drop or paste a screenshot first.');
+    return;
+  }
+  const items = getSpotItems(sessionContext.spot);
+  if (!items.length) {
+    alert('Link items to this spot in Settings first.');
+    return;
+  }
+
+  const btn = $('#sessOcrSmartScan');
+  btn.disabled = true;
+  btn.classList.add('opacity-60');
+  setSmartScanStatus(_ocrSelection ? 'Smart scanning selected region...' : 'Smart scanning screenshot...');
+  try {
+    const imageDataUrl = await smartScanImageDataUrl();
+    const res = await fetch('/api/smart-scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageDataUrl,
+        spotName: sessionContext.spot.name,
+        items: items.map(it => ({ id: it.id, name: it.name })),
+      }),
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok || !payload?.ok) {
+      throw new Error(payload?.error || `Smart Scan failed (${res.status})`);
+    }
+    applySmartScanResult(payload.result);
+    const usage = payload.usage?.total_tokens ? ` (${payload.usage.total_tokens} tokens)` : '';
+    setSmartScanStatus(`Smart Scan complete: ${_ocrDetections.length} item${_ocrDetections.length === 1 ? '' : 's'}${usage}.`);
+    if (!_ocrDetections.length) alert('Smart Scan did not match any visible loot to this spot\'s linked items.');
+  } catch (e) {
+    console.error(e);
+    setSmartScanStatus(e.message || 'Smart Scan failed.', true);
+    alert(e.message || 'Smart Scan failed.');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('opacity-60');
+  }
 }
 
 async function handleOcrFile(file) {
@@ -1933,6 +2066,7 @@ function bindOcrZone() {
   $('#sessOcrApply').addEventListener('click', applyOcrToLoot);
   $('#sessOcrTimeApply').addEventListener('click', applyDetectedTime);
   $('#sessOcrScanSel').addEventListener('click', rescanSelection);
+  $('#sessOcrSmartScan')?.addEventListener('click', runSmartScan);
   $('#sessOcrClearSel').addEventListener('click', () => {
     _ocrSelection = null;
     $('#sessOcrSelToolbar').classList.add('hidden');
