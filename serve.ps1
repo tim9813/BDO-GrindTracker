@@ -84,14 +84,31 @@ function Invoke-SmartScan {
 
   $itemNames = ($items | ForEach-Object { "- $($_.name)" }) -join "`n"
   $itemNameEnum = @($items | ForEach-Object { [string]$_.name } | Select-Object -Unique)
+  $slotHints = @($Scan.slots) | Where-Object { $_.slotIndex }
+  $slotSection = if ($slotHints.Count) {
+    ($slotHints | Sort-Object { [int]$_.slotIndex } | ForEach-Object {
+      $qtyText = if ($_.qty) { "local qty guess $($_.qty)" } else { "no local qty" }
+      "$($_.slotIndex). $($_.itemName) ($qtyText)"
+    }) -join "`n"
+  } else {
+    "No client slot hints were provided."
+  }
   $prompt = @"
 Read this Black Desert Online grind tracker screenshot or cropped loot row.
 
 Use ONLY these local Settings item names:
 $itemNames
 
-Return visible loot only. Do not invent items. If a visible icon is not in the list, omit it.
-Read stack quantities from the bottom-left of each item icon. If a quantity is unreadable, use 0.
+Client-detected slots from left to right:
+$slotSection
+
+Return one loot row per visible item slot, in strict left-to-right visual order.
+slotIndex is 1 for the leftmost visible item icon, 2 for the next, and so on.
+Do not sort by item name, item type, or quantity.
+Do not skip a visible item slot. If the item name is uncertain, choose the closest local Settings item and lower confidence.
+Read the stack quantity from the bottom-left of that exact same item icon. Do not borrow a quantity from another slot.
+The leftmost slot can have a 4-6 digit trash-loot quantity such as 22358; read all digits.
+If a quantity is unreadable, use 0.
 If grind time is visible, return it; otherwise set detected=false and hours/minutes/seconds to 0.
 "@
 
@@ -116,8 +133,9 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
         items = @{
           type = "object"
           additionalProperties = $false
-          required = @("itemName", "qty", "confidence")
+          required = @("slotIndex", "itemName", "qty", "confidence")
           properties = @{
+            slotIndex = @{ type = "integer" }
             itemName = @{ type = "string" }
             qty = @{ type = "integer" }
             confidence = @{ type = "number" }
