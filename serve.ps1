@@ -84,43 +84,33 @@ function Invoke-SmartScan {
 
   $itemNames = ($items | ForEach-Object {
     $idx = if ($_.refIndex) { [int]$_.refIndex } else { [array]::IndexOf($items, $_) + 1 }
-    "- Reference #$idx = $($_.name)"
+    "- Reference #$idx | itemId=$($_.id) | itemName=$($_.name)"
   }) -join "`n"
+  $itemIdEnum = @("") + @($items | ForEach-Object { [string]$_.id } | Select-Object -Unique)
   $itemNameEnum = @("") + @($items | ForEach-Object { [string]$_.name } | Select-Object -Unique)
-  $slotHints = @($Scan.slots) | Where-Object { $_.slotIndex }
-  $slotSection = if ($slotHints.Count) {
-    ($slotHints | Sort-Object { [int]$_.slotIndex } | ForEach-Object {
-      $qtyText = if ($_.qty) { "local qty guess $($_.qty)" } else { "no local qty" }
-      $itemText = if ($_.itemName) { $_.itemName } else { "no local item guess" }
-      "$($_.slotIndex). $itemText ($qtyText)"
-    }) -join "`n"
-  } else {
-    "No client slot hints were provided."
-  }
   $prompt = @"
 Read this Black Desert Online grind tracker screenshot or cropped loot row.
 
-Use ONLY these local Settings item names:
+Use ONLY these local Settings items:
 $itemNames
 
 After the screenshot, reference images are provided for linked local Settings items when available.
-Match each screenshot slot visually against those reference item icons first; do not rely only on item-name memory.
-When a screenshot icon matches a reference icon, return that exact reference refIndex and itemName.
+You are fully responsible for reading the loot row. Do not assume any client OCR, number guesses, item order, or local icon matching.
+Find the visible "Acquired Loot" row or the selected loot-row crop.
+Match each screenshot slot visually against the provided local Settings reference item icons first; do not rely only on item-name memory.
+When a screenshot icon matches a reference icon, return that exact itemId and itemName from the list.
 Reference images are NOT in screenshot slot order. Do not map the first screenshot slot to the first reference image or the last screenshot slot to the last reference image.
 The screenshot slot order is only the left-to-right visual order inside the uploaded loot-row screenshot.
-refIndex means the numbered local Settings reference item, not the screenshot slot number.
-
-Client-detected slots from left to right:
-$slotSection
 
 Return one row for every visible item slot in the selected loot row, including unknown or unlinked items.
 slotIndex is 1 for the leftmost visible item icon among ALL visible icons, 2 for the next, and so on.
-If the icon clearly matches one of the local Settings reference items, use that exact refIndex and itemName.
-If the icon does not clearly match a local Settings reference item, set refIndex to 0, itemName to an empty string, and confidence to 0.
+If the icon clearly matches one of the local Settings reference items, use that exact itemId and itemName.
+If the icon does not clearly match a local Settings reference item, set itemId and itemName to empty strings and confidence to 0.
 Do not sort by item name, item type, or quantity.
 Read the stack quantity from the bottom-left of that exact same item icon. Do not borrow a quantity from another slot.
 The leftmost slot can have a 4-6 digit trash-loot quantity such as 22358; read all digits.
 If a quantity is unreadable, use 0.
+Return bbox as integer coordinates from 0 to 1000 around the full item icon, relative to the uploaded image or crop. Use x0/y0 for top-left and x1/y1 for bottom-right.
 Use confidence from 0 to 1 for the item-icon match.
 If grind time is visible, return it; otherwise set detected=false and hours/minutes/seconds to 0.
 "@
@@ -146,19 +136,31 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
         items = @{
           type = "object"
           additionalProperties = $false
-          required = @("slotIndex", "refIndex", "itemName", "qty", "confidence")
+          required = @("slotIndex", "itemId", "itemName", "qty", "confidence", "bbox")
           properties = @{
             slotIndex = @{ type = "integer" }
-            refIndex = @{ type = "integer" }
+            itemId = @{ type = "string" }
             itemName = @{ type = "string" }
             qty = @{ type = "integer" }
             confidence = @{ type = "number" }
+            bbox = @{
+              type = "object"
+              additionalProperties = $false
+              required = @("x0", "y0", "x1", "y1")
+              properties = @{
+                x0 = @{ type = "integer" }
+                y0 = @{ type = "integer" }
+                x1 = @{ type = "integer" }
+                y1 = @{ type = "integer" }
+              }
+            }
           }
         }
       }
     }
   }
 
+  $schema["properties"]["loot"]["items"]["properties"]["itemId"]["enum"] = $itemIdEnum
   $schema["properties"]["loot"]["items"]["properties"]["itemName"]["enum"] = $itemNameEnum
 
   $content = New-Object System.Collections.ArrayList
@@ -171,7 +173,7 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
     [void]$content.Add(@{ type = "input_text"; text = "Reference item icons from the selected spot Settings:" })
     foreach ($item in $refItems) {
       $idx = if ($item.refIndex) { [int]$item.refIndex } else { [array]::IndexOf($items, $item) + 1 }
-      [void]$content.Add(@{ type = "input_text"; text = "Reference #$idx itemName: $($item.name)" })
+      [void]$content.Add(@{ type = "input_text"; text = "Reference #$idx itemId: $($item.id) itemName: $($item.name)" })
       [void]$content.Add(@{ type = "input_image"; image_url = [string]$item.imageUrl; detail = "low" })
     }
   }
@@ -192,7 +194,7 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
         schema = $schema
       }
     }
-    max_output_tokens = 800
+    max_output_tokens = 1200
   }
 
   $headers = @{

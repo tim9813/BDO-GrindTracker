@@ -1140,9 +1140,7 @@ $('#sessSaveBtn')?.addEventListener('click', () => {
   renderDashboard();
 });
 
-// ==================== OCR (Tesseract.js) ====================
-let _tesseractScriptPromise = null;
-let _ocrWorker = null;
+// ==================== OpenAI Screenshot Scan ====================
 let _ocrDetections = [];   // [{ text, qty, bbox, itemId }]
 let _ocrLocalDetections = [];
 let _ocrOverlayDetections = [];
@@ -1151,48 +1149,6 @@ let _ocrImgNaturalSize = { w: 0, h: 0 };
 let _ocrImageDataUrl = null;
 let _ocrSelection = null;  // { x, y, w, h } in natural coords
 let _ocrDetectedTime = null; // { hours, mins }
-
-function loadTesseractScript() {
-  if (typeof Tesseract !== 'undefined') return Promise.resolve();
-  if (_tesseractScriptPromise) return _tesseractScriptPromise;
-  _tesseractScriptPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'vendor/tesseract/tesseract.min.js';
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('Could not load tesseract.min.js'));
-    document.head.appendChild(s);
-  });
-  return _tesseractScriptPromise;
-}
-
-function absUrl(rel) {
-  return new URL(rel, document.baseURI).href;
-}
-
-async function getOcrWorker(progressCb) {
-  if (_ocrWorker) return _ocrWorker;
-  await loadTesseractScript();
-  _ocrWorker = await Tesseract.createWorker('eng', 1, {
-    workerPath: absUrl('vendor/tesseract/worker.min.js'),
-    corePath:   absUrl('vendor/tesseract/'),
-    langPath:   absUrl('vendor/tesseract/lang'),
-    logger: m => progressCb && progressCb(m),
-  });
-  return _ocrWorker;
-}
-
-async function setOcrMode(mode) {
-  // 'digits' | 'full'
-  const worker = _ocrWorker;
-  if (!worker) return;
-  if (mode === 'digits') {
-    await worker.setParameters({ tessedit_char_whitelist: '0123456789,', preserve_interword_spaces: '1', tessedit_pageseg_mode: '6' });
-  } else if (mode === 'line-digits') {
-    await worker.setParameters({ tessedit_char_whitelist: '0123456789,', preserve_interword_spaces: '1', tessedit_pageseg_mode: '7' });
-  } else {
-    await worker.setParameters({ tessedit_char_whitelist: '', preserve_interword_spaces: '1', tessedit_pageseg_mode: '6' });
-  }
-}
 
 function parseTimeFromText(text) {
   if (!text) return null;
@@ -1255,23 +1211,6 @@ function cropImageToDataUrl(img, rect, scale = 2) {
   return cv.toDataURL('image/png');
 }
 
-async function recognizeGrindTime(worker, img, fullText = '') {
-  const fromFull = parseTimeFromText(fullText);
-  if (fromFull) return fromFull;
-
-  const crops = [
-    { x: 0, y: 0, w: img.naturalWidth * 0.72, h: img.naturalHeight * 0.38 },
-    { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight * 0.32 },
-  ];
-  await setOcrMode('full');
-  for (const rect of crops) {
-    const { data } = await worker.recognize(cropImageToDataUrl(img, rect, 3));
-    const parsed = parseTimeFromText(data.text || '');
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
 function clearOcr() {
   _ocrDetections = [];
   _ocrLocalDetections = [];
@@ -1288,7 +1227,7 @@ function clearOcr() {
   $('#sessOcrFile').value = '';
   $('#sessOcrTime')?.classList.add('hidden');
   $('#sessOcrSelToolbar')?.classList.add('hidden');
-  setSmartScanStatus('Uses OpenAI when config.local.json is set.');
+  setSmartScanStatus('OpenAI-only scan when config.local.json is set.');
 }
 
 function setOcrLoading(text) {
@@ -1324,7 +1263,7 @@ function imageFromDataUrl(dataUrl) {
   });
 }
 
-async function smartScanImageDataUrl() {
+async function smartScanImagePayload() {
   if (!_ocrImageDataUrl) return null;
   const img = await imageFromDataUrl(_ocrImageDataUrl);
   const crop = _ocrSelection
@@ -1347,82 +1286,10 @@ async function smartScanImageDataUrl() {
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, cv.width, cv.height);
-  return cv.toDataURL('image/png');
-}
-
-function cloneOcrDetection(d) {
   return {
-    ...d,
-    bbox: d.bbox ? { ...d.bbox } : null,
+    imageDataUrl: cv.toDataURL('image/png'),
+    frame: crop,
   };
-}
-
-function visualSlotIndex(d, fallback) {
-  if (!d?.bbox) return { row: 0, col: fallback };
-  return {
-    row: Math.round(((d.bbox.y0 + d.bbox.y1) / 2) / 30),
-    col: (d.bbox.x0 + d.bbox.x1) / 2,
-  };
-}
-
-function sortDetectionsByVisualOrder(detections) {
-  const source = detections || [];
-  return [...source].sort((a, b) => {
-    const ai = visualSlotIndex(a, source.indexOf(a));
-    const bi = visualSlotIndex(b, source.indexOf(b));
-    return ai.row - bi.row || ai.col - bi.col;
-  });
-}
-
-function bboxCenter(bbox) {
-  return bbox ? { x: (bbox.x0 + bbox.x1) / 2, y: (bbox.y0 + bbox.y1) / 2 } : { x: 0, y: 0 };
-}
-
-function detectionForSlot(slot) {
-  if (!slot?.bbox) return null;
-  const candidates = (_ocrLocalDetections.length ? _ocrLocalDetections : _ocrDetections)
-    .filter(d => d.bbox)
-    .map(d => {
-      const c = bboxCenter(d.bbox);
-      const inside = c.x >= slot.bbox.x0 - 3 && c.x <= slot.bbox.x1 + 3 && c.y >= slot.bbox.y0 - 3 && c.y <= slot.bbox.y1 + 3;
-      const sc = bboxCenter(slot.bbox);
-      const distance = Math.abs(c.x - sc.x) + Math.abs(c.y - sc.y);
-      return { d, inside, distance };
-    })
-    .filter(x => x.inside || x.d.slotIndex === slot.slotIndex)
-    .sort((a, b) => a.distance - b.distance);
-  return candidates[0]?.d || null;
-}
-
-function smartScanSlotHints() {
-  const slots = _ocrSlots.length
-    ? _ocrSlots
-    : sortDetectionsByVisualOrder(_ocrLocalDetections.length ? _ocrLocalDetections : _ocrDetections)
-      .map((d, i) => ({ slotIndex: i + 1, bbox: d.bbox }));
-  return slots
-    .map((slot, i) => {
-      const d = detectionForSlot(slot);
-      return {
-        slotIndex: slot.slotIndex || i + 1,
-        itemName: '',
-        qty: d?.qty || 0,
-      };
-    });
-}
-
-function normalizeScanName(name) {
-  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-}
-
-function matchSmartScanItem(name, items) {
-  const wanted = normalizeScanName(name);
-  if (!wanted) return null;
-  return items.find(it => normalizeScanName(it.name) === wanted) ||
-    items.find(it => {
-      const n = normalizeScanName(it.name);
-      return n && (n.includes(wanted) || wanted.includes(n));
-    }) ||
-    null;
 }
 
 function sortedSmartRows(scan) {
@@ -1435,40 +1302,42 @@ function sortedSmartRows(scan) {
     .sort((a, b) => (a.slotIndex || a.originalIndex + 1) - (b.slotIndex || b.originalIndex + 1));
 }
 
-const SMART_SCAN_MIN_CONFIDENCE = 0.65;
-
 function smartItemForSlot(row, items) {
-  const smartItem = matchSmartScanItem(row.itemName, items);
   const smartConfidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
-  const refIndex = Math.max(0, Math.floor(Number(row.refIndex) || 0));
-  const refItem = refIndex > 0 ? items[refIndex - 1] : null;
-  if (smartConfidence < SMART_SCAN_MIN_CONFIDENCE) {
-    return { item: null, confidence: smartConfidence, source: 'openai-smart-scan' };
-  }
-  // If OpenAI returns a valid item name and a conflicting refIndex, the name is
-  // safer because it is constrained by the Settings item-name enum.
-  if (smartItem) return { item: smartItem, confidence: smartConfidence, source: 'openai-smart-scan' };
-  if (refItem) return { item: refItem, confidence: smartConfidence, source: 'openai-smart-scan' };
-  return { item: null, confidence: smartConfidence, source: 'openai-smart-scan' };
+  const itemId = String(row.itemId || '');
+  const item = itemId ? items.find(it => it.id === itemId) : null;
+  return { item: item || null, confidence: smartConfidence, source: 'openai-smart-scan' };
 }
 
-function applySmartScanResult(scan, baseDetections = null) {
+function smartScanRowBbox(row, frame) {
+  const box = row?.bbox;
+  if (!box || !frame) return null;
+  const x0 = Math.max(0, Math.min(1000, Number(box.x0) || 0));
+  const y0 = Math.max(0, Math.min(1000, Number(box.y0) || 0));
+  const x1 = Math.max(0, Math.min(1000, Number(box.x1) || 0));
+  const y1 = Math.max(0, Math.min(1000, Number(box.y1) || 0));
+  if (x1 <= x0 || y1 <= y0) return null;
+  return {
+    x0: frame.x + (x0 / 1000) * frame.w,
+    y0: frame.y + (y0 / 1000) * frame.h,
+    x1: frame.x + (x1 / 1000) * frame.w,
+    y1: frame.y + (y1 / 1000) * frame.h,
+  };
+}
+
+function applySmartScanResult(scan, frame = null) {
   const items = getSpotItems(sessionContext.spot);
   const rows = sortedSmartRows(scan).filter(row => row.slotIndex > 0);
-  const slots = _ocrSlots.length
-    ? _ocrSlots
-    : sortDetectionsByVisualOrder(baseDetections || _ocrLocalDetections || [])
-      .map((d, i) => ({ slotIndex: i + 1, bbox: d.bbox }));
 
   _ocrOverlayDetections = rows.map(row => {
-    const slot = slots.find(s => s.slotIndex === row.slotIndex);
+    const bbox = smartScanRowBbox(row, frame);
     const match = smartItemForSlot(row, items);
     const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
-    if (!slot || qty <= 0) return null;
+    if (!bbox || qty <= 0) return null;
     return {
       text: String(qty),
       qty,
-      bbox: slot.bbox || null,
+      bbox,
       itemId: match.item?.id || null,
       matchedName: match.item?.name || row.itemName || '',
       score: match.confidence,
@@ -1478,7 +1347,7 @@ function applySmartScanResult(scan, baseDetections = null) {
   }).filter(Boolean);
 
   _ocrDetections = rows.map(row => {
-    const slot = slots.find(s => s.slotIndex === row.slotIndex);
+    const bbox = smartScanRowBbox(row, frame);
     const match = smartItemForSlot(row, items);
     if (!match.item) return null;
 
@@ -1486,7 +1355,7 @@ function applySmartScanResult(scan, baseDetections = null) {
     return {
       text: qty > 0 ? String(qty) : '',
       qty,
-      bbox: slot?.bbox || null,
+      bbox,
       itemId: match.item.id,
       matchedName: match.item.name,
       score: match.confidence,
@@ -1521,18 +1390,19 @@ async function runSmartScan() {
   }
 
   const btn = $('#sessOcrSmartScan');
+  const selBtn = $('#sessOcrScanSel');
   btn.disabled = true;
+  if (selBtn) selBtn.disabled = true;
   btn.classList.add('opacity-60');
   setSmartScanStatus(_ocrSelection ? 'Smart scanning selected region...' : 'Smart scanning screenshot...');
   try {
-    const baseDetections = sortDetectionsByVisualOrder(_ocrLocalDetections.length ? _ocrLocalDetections : _ocrDetections)
-      .map(cloneOcrDetection);
-    const imageDataUrl = await smartScanImageDataUrl();
+    const scanImage = await smartScanImagePayload();
+    if (!scanImage?.imageDataUrl) throw new Error('Could not prepare screenshot for Smart Scan.');
     const res = await fetch('/api/smart-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        imageDataUrl,
+        imageDataUrl: scanImage.imageDataUrl,
         spotName: sessionContext.spot.name,
         items: items.map((it, index) => ({
           id: it.id,
@@ -1540,14 +1410,13 @@ async function runSmartScan() {
           name: it.name,
           imageUrl: normalizeImageUrl(it.imageUrl || it.iconUrl || ''),
         })),
-        slots: smartScanSlotHints(),
       }),
     });
     const payload = await res.json().catch(() => null);
     if (!res.ok || !payload?.ok) {
       throw new Error(payload?.error || `Smart Scan failed (${res.status})`);
     }
-    applySmartScanResult(payload.result, baseDetections);
+    applySmartScanResult(payload.result, scanImage.frame);
     recordOpenAiUsage(payload, _ocrDetections.length);
     const usage = payload.usage?.total_tokens ? ` (${payload.usage.total_tokens} tokens)` : '';
     const overlayCount = _ocrOverlayDetections.length;
@@ -1560,6 +1429,7 @@ async function runSmartScan() {
     alert(e.message || 'Smart Scan failed.');
   } finally {
     btn.disabled = false;
+    if (selBtn) selBtn.disabled = false;
     btn.classList.remove('opacity-60');
   }
 }
@@ -1569,63 +1439,34 @@ async function handleOcrFile(file) {
     alert('Please drop an image file.');
     return;
   }
-  setOcrLoading('Loading scanner… (first run can take 5–10 s)');
+  setOcrLoading('Preparing screenshot...');
   try {
     const dataUrl = await fileToDataUrl(file);
+    _ocrDetections = [];
+    _ocrLocalDetections = [];
+    _ocrOverlayDetections = [];
+    _ocrSlots = [];
+    _ocrSelection = null;
+    _ocrDetectedTime = null;
     _ocrImageDataUrl = dataUrl;
     const img = new Image();
     img.src = dataUrl;
     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
     _ocrImgNaturalSize = { w: img.naturalWidth, h: img.naturalHeight };
 
-    const worker = await getOcrWorker(m => {
-      if (m.status === 'loading tesseract core' || m.status === 'initializing tesseract') {
-        setOcrLoading('Loading scanner…');
-      } else if (m.status === 'loading language traineddata') {
-        setOcrLoading('Loading language model…');
-      } else if (m.status === 'recognizing text') {
-        setOcrLoading(`Scanning… ${Math.round((m.progress || 0) * 100)}%`);
-      }
-    });
-
-    // Pass 1: full text → time pattern
-    setOcrLoading('Detecting time…');
-    await setOcrMode('full');
-    const fullScan = await worker.recognize(dataUrl);
-    _ocrDetectedTime = await recognizeGrindTime(worker, img, fullScan.data.text || '');
-
-    // Pass 2: digits only → numbers list
-    setOcrLoading('Detecting numbers…');
-    await setOcrMode('digits');
-    const digitScan = await worker.recognize(dataUrl);
-    const digitDetections = extractDetections(digitScan.data.words, { x: 0, y: 0 });
-
-    setOcrLoading('Matching loot icons...');
-    const lootMatches = await detectLootMatches(img, digitDetections, null, worker);
-    _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
-    _ocrDetections = _ocrDetections.filter(d => d.itemId);
-    _ocrLocalDetections = sortDetectionsByVisualOrder(_ocrDetections).map(cloneOcrDetection);
-
     $('#sessOcrLoading').classList.add('hidden');
     $('#sessOcrPreview').src = dataUrl;
     $('#sessOcrPreview').onload = () => drawOcrOverlay();
     $('#sessOcrResults').classList.remove('hidden');
     $('#sessOcrClear').classList.remove('hidden');
-
-    if (_ocrDetectedTime) {
-      $('#sessOcrTime').classList.remove('hidden');
-      $('#sessOcrTimeText').textContent = formatDetectedTime(_ocrDetectedTime);
-    } else {
-      $('#sessOcrTime').classList.add('hidden');
-    }
-
-    if (_ocrDetections.length === 0 && !_ocrDetectedTime) {
-      alert('Nothing recognized. Try cropping in on the loot row, or use a higher-resolution screenshot.');
-    }
+    $('#sessOcrTime').classList.add('hidden');
+    $('#sessOcrSelToolbar').classList.add('hidden');
+    setSmartScanStatus('Screenshot ready. Click Smart Scan to send it to OpenAI.');
     renderOcrList();
+    drawOcrOverlay();
   } catch (e) {
     console.error(e);
-    alert('OCR failed: ' + (e.message || e));
+    alert('Screenshot load failed: ' + (e.message || e));
     clearOcr();
   }
 }
@@ -2034,48 +1875,14 @@ async function detectLootMatches(img, quantityDetections, searchRect = null, wor
 
 async function rescanSelection() {
   if (!_ocrSelection || !_ocrImageDataUrl) return;
-  const sel = _ocrSelection;
-  setOcrLoading('Scanning selection…');
-  try {
-    const img = new Image();
-    img.src = _ocrImageDataUrl;
-    await new Promise(r => { img.onload = r; });
-    const SCALE = 2;  // upscale for small inventory numbers
-    const cv = document.createElement('canvas');
-    cv.width = Math.round(sel.w * SCALE);
-    cv.height = Math.round(sel.h * SCALE);
-    const ctx = cv.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(img, sel.x, sel.y, sel.w, sel.h, 0, 0, cv.width, cv.height);
-    const cropUrl = cv.toDataURL('image/png');
-
-    const worker = await getOcrWorker();
-    await setOcrMode('digits');
-    const { data } = await worker.recognize(cropUrl);
-    const digitDetections = extractDetections(data.words, { x: sel.x, y: sel.y }, SCALE);
-    const lootMatches = await detectLootMatches(img, digitDetections, sel, worker);
-    _ocrDetections = lootMatches.length ? lootMatches : digitDetections;
-    _ocrDetections = _ocrDetections.filter(d => d.itemId);
-    _ocrLocalDetections = sortDetectionsByVisualOrder(_ocrDetections).map(cloneOcrDetection);
-
-    $('#sessOcrLoading').classList.add('hidden');
-    $('#sessOcrResults').classList.remove('hidden');
-    if (_ocrDetections.length === 0) alert('No numbers found in that selection.');
-    renderOcrList();
-    drawOcrOverlay();
-  } catch (e) {
-    alert('Rescan failed: ' + (e.message || e));
-    $('#sessOcrLoading').classList.add('hidden');
-    $('#sessOcrResults').classList.remove('hidden');
-  }
+  return runSmartScan();
 }
 
 function renderOcrList() {
   const wrap = $('#sessOcrList');
   const items = getSpotItems(sessionContext.spot);
   if (_ocrDetections.length === 0) {
-    wrap.innerHTML = `<div class="text-xs text-mute2 py-2">No numbers in current scan. Drag a rectangle on the image to scan a region.</div>`;
+    wrap.innerHTML = `<div class="text-xs text-mute2 py-2">No OpenAI scan results yet. Click Smart Scan, or drag a rectangle first to scan only that region.</div>`;
     $('#sessOcrSummary').textContent = '';
     return;
   }

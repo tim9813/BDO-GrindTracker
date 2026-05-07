@@ -495,7 +495,7 @@
 
         <div id="sessOcrDrop" class="block border-2 border-dashed border-border hover:border-accent rounded-md py-5 text-center text-mute2 cursor-pointer transition-colors">
           <div class="text-sm">Drop / paste a screenshot, or click to choose</div>
-          <div class="text-xs mt-1">Detects grind time, loot quantities, and linked item icons</div>
+          <div class="text-xs mt-1">OpenAI reads grind time, quantities, and linked Settings items</div>
           <input id="sessOcrFile" type="file" accept="image/*" class="hidden">
         </div>
 
@@ -508,7 +508,7 @@
             <img id="sessOcrPreview" class="block max-w-full max-h-[260px] rounded-md border border-border" alt="" draggable="false">
             <canvas id="sessOcrOverlay" class="absolute inset-0 cursor-crosshair rounded-md"></canvas>
           </div>
-          <div class="text-xs text-mute2">Drag a rectangle on the image to scan just that region. Yellow = unmapped, green = mapped.</div>
+          <div class="text-xs text-mute2">Drag a rectangle to send only that region to OpenAI. Yellow = unmapped, green = mapped.</div>
 
           <div id="sessOcrTime" class="hidden bg-panel border border-accent/30 rounded-md px-3 py-2 flex items-center gap-3">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
@@ -518,13 +518,13 @@
 
           <div id="sessOcrSelToolbar" class="hidden flex items-center gap-2 bg-panel border border-border rounded-md px-3 py-2 text-xs">
             <span>Selection ready —</span>
-            <button id="sessOcrScanSel" class="h-7 px-3 bg-accent hover:brightness-110 rounded-md font-medium text-white">Scan selection</button>
+            <button id="sessOcrScanSel" class="h-7 px-3 bg-accent hover:brightness-110 rounded-md font-medium text-white">Smart Scan selection</button>
             <button id="sessOcrClearSel" class="h-7 px-3 bg-panel2 border border-border hover:text-white rounded-md text-mute">Clear selection</button>
           </div>
 
           <div class="flex flex-wrap items-center gap-2 bg-panel border border-border rounded-md px-3 py-2 text-xs">
             <button id="sessOcrSmartScan" class="h-8 px-3 bg-accent2 hover:brightness-110 rounded-md font-medium text-white">Smart Scan</button>
-            <span id="sessOcrSmartStatus" class="text-mute2">Uses OpenAI when <code>config.local.json</code> is set.</span>
+            <span id="sessOcrSmartStatus" class="text-mute2">OpenAI-only scan when <code>config.local.json</code> is set.</span>
           </div>
 
           <div id="sessOcrList" class="space-y-1.5"></div>
