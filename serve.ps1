@@ -82,7 +82,10 @@ function Invoke-SmartScan {
   $items = @($Scan.items) | Where-Object { $_.name }
   if (-not $items.Count) { throw "No linked items were provided for Smart Scan." }
 
-  $itemNames = ($items | ForEach-Object { "- $($_.name)" }) -join "`n"
+  $itemNames = ($items | ForEach-Object {
+    $idx = if ($_.refIndex) { [int]$_.refIndex } else { [array]::IndexOf($items, $_) + 1 }
+    "- Reference #$idx = $($_.name)"
+  }) -join "`n"
   $itemNameEnum = @("") + @($items | ForEach-Object { [string]$_.name } | Select-Object -Unique)
   $slotHints = @($Scan.slots) | Where-Object { $_.slotIndex }
   $slotSection = if ($slotHints.Count) {
@@ -102,17 +105,18 @@ $itemNames
 
 After the screenshot, reference images are provided for linked local Settings items when available.
 Match each screenshot slot visually against those reference item icons first; do not rely only on item-name memory.
-When a screenshot icon matches a reference icon, return that exact reference itemName.
+When a screenshot icon matches a reference icon, return that exact reference refIndex and itemName.
 Reference images are NOT in screenshot slot order. Do not map the first screenshot slot to the first reference image or the last screenshot slot to the last reference image.
 The screenshot slot order is only the left-to-right visual order inside the uploaded loot-row screenshot.
+refIndex means the numbered local Settings reference item, not the screenshot slot number.
 
 Client-detected slots from left to right:
 $slotSection
 
 Return one row for every visible item slot in the selected loot row, including unknown or unlinked items.
 slotIndex is 1 for the leftmost visible item icon among ALL visible icons, 2 for the next, and so on.
-If the icon clearly matches one of the local Settings item names, use that exact itemName.
-If the icon does not clearly match a local Settings item, set itemName to an empty string and confidence to 0.
+If the icon clearly matches one of the local Settings reference items, use that exact refIndex and itemName.
+If the icon does not clearly match a local Settings reference item, set refIndex to 0, itemName to an empty string, and confidence to 0.
 Do not sort by item name, item type, or quantity.
 Read the stack quantity from the bottom-left of that exact same item icon. Do not borrow a quantity from another slot.
 The leftmost slot can have a 4-6 digit trash-loot quantity such as 22358; read all digits.
@@ -142,9 +146,10 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
         items = @{
           type = "object"
           additionalProperties = $false
-          required = @("slotIndex", "itemName", "qty", "confidence")
+          required = @("slotIndex", "refIndex", "itemName", "qty", "confidence")
           properties = @{
             slotIndex = @{ type = "integer" }
+            refIndex = @{ type = "integer" }
             itemName = @{ type = "string" }
             qty = @{ type = "integer" }
             confidence = @{ type = "number" }
@@ -165,7 +170,8 @@ If grind time is visible, return it; otherwise set detected=false and hours/minu
   if ($refItems.Count) {
     [void]$content.Add(@{ type = "input_text"; text = "Reference item icons from the selected spot Settings:" })
     foreach ($item in $refItems) {
-      [void]$content.Add(@{ type = "input_text"; text = "Reference itemName: $($item.name)" })
+      $idx = if ($item.refIndex) { [int]$item.refIndex } else { [array]::IndexOf($items, $item) + 1 }
+      [void]$content.Add(@{ type = "input_text"; text = "Reference #$idx itemName: $($item.name)" })
       [void]$content.Add(@{ type = "input_image"; image_url = [string]$item.imageUrl; detail = "low" })
     }
   }

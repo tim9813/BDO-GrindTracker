@@ -1440,6 +1440,11 @@ const SMART_SCAN_MIN_CONFIDENCE = 0.65;
 function smartItemForSlot(row, items) {
   const smartItem = matchSmartScanItem(row.itemName, items);
   const smartConfidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
+  const refIndex = Math.max(0, Math.floor(Number(row.refIndex) || 0));
+  const refItem = refIndex > 0 ? items[refIndex - 1] : null;
+  if (refItem && smartConfidence >= SMART_SCAN_MIN_CONFIDENCE) {
+    return { item: refItem, confidence: smartConfidence, source: 'openai-smart-scan' };
+  }
   if (smartItem && smartConfidence >= SMART_SCAN_MIN_CONFIDENCE) {
     return { item: smartItem, confidence: smartConfidence, source: 'openai-smart-scan' };
   }
@@ -1528,8 +1533,9 @@ async function runSmartScan() {
       body: JSON.stringify({
         imageDataUrl,
         spotName: sessionContext.spot.name,
-        items: items.map(it => ({
+        items: items.map((it, index) => ({
           id: it.id,
+          refIndex: index + 1,
           name: it.name,
           imageUrl: normalizeImageUrl(it.imageUrl || it.iconUrl || ''),
         })),
