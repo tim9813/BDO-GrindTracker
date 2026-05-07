@@ -1435,8 +1435,7 @@ function sortedSmartRows(scan) {
     .sort((a, b) => (a.slotIndex || a.originalIndex + 1) - (b.slotIndex || b.originalIndex + 1));
 }
 
-const SMART_SCAN_MIN_CONFIDENCE = 0.48;
-const LOCAL_SMART_FALLBACK_CONFIDENCE = 0.56;
+const SMART_SCAN_MIN_CONFIDENCE = 0.65;
 
 function applySmartScanResult(scan, baseDetections = null) {
   const items = getSpotItems(sessionContext.spot);
@@ -1465,17 +1464,11 @@ function applySmartScanResult(scan, baseDetections = null) {
   }).filter(Boolean);
 
   _ocrDetections = rows.map(row => {
-    const slot = slots.find(s => s.slotIndex === row.slotIndex);
-    const localRow = slot ? detectionForSlot(slot) : null;
-    const smartItem = matchSmartScanItem(row.itemName, items);
-    const localItem = localRow?.itemId ? items.find(it => it.id === localRow.itemId) : null;
+    const item = matchSmartScanItem(row.itemName, items);
     const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
-    const localConfidence = Math.max(0, Math.min(1, Number(localRow?.score) || 0));
-    const item = smartItem && confidence >= SMART_SCAN_MIN_CONFIDENCE
-      ? smartItem
-      : (localItem && localConfidence >= LOCAL_SMART_FALLBACK_CONFIDENCE ? localItem : null);
-    if (!item) return null;
+    if (!item || confidence < SMART_SCAN_MIN_CONFIDENCE) return null;
 
+    const slot = slots.find(s => s.slotIndex === row.slotIndex);
     const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
     return {
       text: qty > 0 ? String(qty) : '',
