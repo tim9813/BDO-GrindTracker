@@ -1410,6 +1410,109 @@ function smartScanSlotHints() {
     });
 }
 
+function smartScanReferenceName(name) {
+  const text = String(name || '').trim();
+  return text.length > 42 ? `${text.slice(0, 39)}...` : text;
+}
+
+function loadSmartScanReferenceImage(src) {
+  return new Promise(resolve => {
+    if (!src) { resolve(null); return; }
+    const img = new Image();
+    if (!/^data:image\//i.test(src)) {
+      img.crossOrigin = 'anonymous';
+      img.referrerPolicy = 'no-referrer';
+    }
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+async function buildSmartScanReferenceSheet(items) {
+  const refs = items
+    .slice(0, 24)
+    .map((item, index) => ({
+      item,
+      refIndex: index + 1,
+      name: item.name,
+      imageUrl: normalizeImageUrl(item.imageUrl || item.iconUrl || ''),
+    }));
+  if (!refs.length) return null;
+
+  await Promise.all(refs.map(async ref => {
+    ref.img = await loadSmartScanReferenceImage(ref.imageUrl);
+  }));
+
+  const drawSheet = allowRemoteImages => {
+    const cellW = 330;
+    const cellH = 82;
+    const cols = refs.length > 1 ? 2 : 1;
+    const rows = Math.ceil(refs.length / cols);
+    const cv = document.createElement('canvas');
+    cv.width = cols * cellW;
+    cv.height = rows * cellH;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.textBaseline = 'top';
+    let drawnIcons = 0;
+
+    for (const ref of refs) {
+      const i = ref.refIndex - 1;
+      const x = (i % cols) * cellW;
+      const y = Math.floor(i / cols) * cellH;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x + 6, y + 6, cellW - 12, cellH - 12);
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 6, y + 6, cellW - 12, cellH - 12);
+
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillRect(x + 12, y + 12, 42, 26);
+      ctx.fillStyle = '#111827';
+      ctx.font = '700 16px Arial, sans-serif';
+      ctx.fillText(`#${ref.refIndex}`, x + 18, y + 16);
+
+      const canDrawRemote = allowRemoteImages || /^data:image\//i.test(ref.imageUrl);
+      if (ref.img && canDrawRemote) {
+        const max = 54;
+        const scale = Math.min(max / ref.img.naturalWidth, max / ref.img.naturalHeight);
+        const w = Math.max(1, Math.round(ref.img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(ref.img.naturalHeight * scale));
+        ctx.drawImage(ref.img, x + 18 + Math.round((54 - w) / 2), y + 42 + Math.round((34 - h) / 2), w, h);
+        drawnIcons += 1;
+      } else {
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fillRect(x + 18, y + 42, 54, 28);
+      }
+
+      ctx.fillStyle = '#111827';
+      ctx.font = '700 14px Arial, sans-serif';
+      ctx.fillText(smartScanReferenceName(ref.name), x + 84, y + 18);
+      ctx.fillStyle = '#475569';
+      ctx.font = '400 12px Arial, sans-serif';
+      ctx.fillText(`refIndex ${ref.refIndex}`, x + 84, y + 43);
+    }
+
+    return { dataUrl: cv.toDataURL('image/png'), drawnIcons };
+  };
+
+  try {
+    const sheet = drawSheet(true);
+    return sheet.drawnIcons ? sheet.dataUrl : null;
+  } catch (e) {
+    console.warn('Smart Scan reference sheet fell back to local images only.', e);
+  }
+  try {
+    const sheet = drawSheet(false);
+    return sheet.drawnIcons ? sheet.dataUrl : null;
+  } catch (e) {
+    console.warn('Smart Scan reference sheet failed.', e);
+    return null;
+  }
+}
+
 function normalizeScanName(name) {
   return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -1527,11 +1630,13 @@ async function runSmartScan() {
     const baseDetections = sortDetectionsByVisualOrder(_ocrLocalDetections.length ? _ocrLocalDetections : _ocrDetections)
       .map(cloneOcrDetection);
     const imageDataUrl = await smartScanImageDataUrl();
+    const referenceSheetDataUrl = await buildSmartScanReferenceSheet(items);
     const res = await fetch('/api/smart-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         imageDataUrl,
+        referenceSheetDataUrl,
         spotName: sessionContext.spot.name,
         items: items.map((it, index) => ({
           id: it.id,
