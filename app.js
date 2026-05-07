@@ -1434,33 +1434,59 @@ function sortedSmartRows(scan) {
 }
 
 const SMART_SCAN_MIN_CONFIDENCE = 0.65;
+const LOCAL_SLOT_MIN_CONFIDENCE = 0.74;
 
 function applySmartScanResult(scan, baseDetections = null) {
   const items = getSpotItems(sessionContext.spot);
   const rows = sortedSmartRows(scan).filter(row => row.slotIndex > 0);
+  const rowsBySlot = new Map(rows.map(row => [row.slotIndex, row]));
   const slots = _ocrSlots.length
     ? _ocrSlots
     : sortDetectionsByVisualOrder(baseDetections || _ocrLocalDetections || [])
       .map((d, i) => ({ slotIndex: i + 1, bbox: d.bbox }));
 
-  _ocrDetections = rows.map(row => {
-    const item = matchSmartScanItem(row.itemName, items);
-    const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
-    if (!item || confidence < SMART_SCAN_MIN_CONFIDENCE) return null;
-
-    const slot = slots.find(s => s.slotIndex === row.slotIndex);
-    const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
-    return {
-      text: qty > 0 ? String(qty) : '',
-      qty,
-      bbox: slot?.bbox || null,
-      itemId: item.id,
-      matchedName: item.name,
-      score: confidence,
-      source: 'openai-smart-scan',
-      slotIndex: row.slotIndex,
-    };
-  }).filter(Boolean);
+  if (slots.length) {
+    _ocrDetections = slots.map(slot => {
+      const row = rowsBySlot.get(slot.slotIndex);
+      const smartItem = row ? matchSmartScanItem(row.itemName, items) : null;
+      const smartConfidence = Math.max(0, Math.min(1, Number(row?.confidence) || 0));
+      const localRow = detectionForSlot(slot);
+      const localItem = localRow?.itemId ? items.find(it => it.id === localRow.itemId) : null;
+      const localConfidence = Math.max(0, Math.min(1, Number(localRow?.score) || 0));
+      const item = smartItem && smartConfidence >= SMART_SCAN_MIN_CONFIDENCE
+        ? smartItem
+        : (localItem && localConfidence >= LOCAL_SLOT_MIN_CONFIDENCE ? localItem : null);
+      const smartQty = Math.max(0, Math.floor(Number(row?.qty) || 0));
+      const localQty = Math.max(0, Math.floor(Number(localRow?.qty) || 0));
+      const qty = smartQty || localQty;
+      return {
+        text: qty > 0 ? String(qty) : '',
+        qty,
+        bbox: slot.bbox || localRow?.bbox || null,
+        itemId: item?.id || null,
+        matchedName: item?.name || row?.itemName || '',
+        score: item ? Math.max(smartConfidence, localConfidence) : smartConfidence,
+        source: item ? 'openai-smart-scan' : 'openai-smart-scan-review',
+        slotIndex: slot.slotIndex,
+      };
+    });
+  } else {
+    _ocrDetections = rows.map(row => {
+      const item = matchSmartScanItem(row.itemName, items);
+      const confidence = Math.max(0, Math.min(1, Number(row.confidence) || 0));
+      const qty = Math.max(0, Math.floor(Number(row.qty) || 0));
+      return {
+        text: qty > 0 ? String(qty) : '',
+        qty,
+        bbox: null,
+        itemId: item && confidence >= SMART_SCAN_MIN_CONFIDENCE ? item.id : null,
+        matchedName: item?.name || row.itemName || '',
+        score: confidence,
+        source: item && confidence >= SMART_SCAN_MIN_CONFIDENCE ? 'openai-smart-scan' : 'openai-smart-scan-review',
+        slotIndex: row.slotIndex,
+      };
+    });
+  }
 
   if (scan?.time?.detected) {
     _ocrDetectedTime = {
@@ -2043,17 +2069,21 @@ function renderOcrList() {
     const mappedItem = d.itemId ? items.find(it => it.id === d.itemId) : null;
     const preview = mappedItem
       ? itemIconHTML(mappedItem, 52)
-      : `<div class="w-[52px] h-[52px] rounded-md bg-bg border border-border"></div>`;
+      : `<div class="w-[52px] h-[52px] rounded-md bg-bg border border-border flex items-center justify-center text-[10px] text-mute2">#${escapeHtml(d.slotIndex || i + 1)}</div>`;
     const itemOptionsRendered = items.map(it =>
       `<option value="${it.id}" ${d.itemId === it.id ? 'selected' : ''}>${escapeHtml(it.name)}</option>`
     ).join('');
     const qtyValue = d.qty > 0 ? String(d.qty) : '';
+    const reviewOption = d.source === 'openai-smart-scan-review' && d.matchedName
+      ? `<option value="" disabled>Review: ${escapeHtml(d.matchedName)}</option>`
+      : '';
     return `
       <div class="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-center bg-panel border border-border rounded-md px-3 py-2">
         ${preview}
         <input type="number" min="0" step="1" placeholder="Qty" value="${escapeAttr(qtyValue)}" data-ocr-qty="${i}"
           class="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-sm font-mono tabular-nums focus:outline-none focus:border-accent">
         <select data-ocr-pick="${i}" class="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent">
+          ${reviewOption}
           <option value="">— Skip —</option>
           <option value="__hours__" ${d.itemId === '__hours__' ? 'selected' : ''}>→ Hours</option>
           <option value="__mins__"  ${d.itemId === '__mins__'  ? 'selected' : ''}>→ Minutes</option>
