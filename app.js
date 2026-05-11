@@ -1434,6 +1434,31 @@ async function runSmartScan() {
   }
 }
 
+async function loadOcrDataUrl(dataUrl) {
+  _ocrDetections = [];
+  _ocrLocalDetections = [];
+  _ocrOverlayDetections = [];
+  _ocrSlots = [];
+  _ocrSelection = null;
+  _ocrDetectedTime = null;
+  _ocrImageDataUrl = dataUrl;
+  const img = new Image();
+  img.src = dataUrl;
+  await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+  _ocrImgNaturalSize = { w: img.naturalWidth, h: img.naturalHeight };
+
+  $('#sessOcrLoading').classList.add('hidden');
+  $('#sessOcrPreview').src = dataUrl;
+  $('#sessOcrPreview').onload = () => drawOcrOverlay();
+  $('#sessOcrResults').classList.remove('hidden');
+  $('#sessOcrClear').classList.remove('hidden');
+  $('#sessOcrTime').classList.add('hidden');
+  $('#sessOcrSelToolbar').classList.add('hidden');
+  setSmartScanStatus('Screenshot ready. Click Smart Scan to send it to OpenAI.');
+  renderOcrList();
+  drawOcrOverlay();
+}
+
 async function handleOcrFile(file) {
   if (!file || !file.type?.startsWith('image/')) {
     alert('Please drop an image file.');
@@ -1441,33 +1466,225 @@ async function handleOcrFile(file) {
   }
   setOcrLoading('Preparing screenshot...');
   try {
-    const dataUrl = await fileToDataUrl(file);
-    _ocrDetections = [];
-    _ocrLocalDetections = [];
-    _ocrOverlayDetections = [];
-    _ocrSlots = [];
-    _ocrSelection = null;
-    _ocrDetectedTime = null;
-    _ocrImageDataUrl = dataUrl;
-    const img = new Image();
-    img.src = dataUrl;
-    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
-    _ocrImgNaturalSize = { w: img.naturalWidth, h: img.naturalHeight };
-
-    $('#sessOcrLoading').classList.add('hidden');
-    $('#sessOcrPreview').src = dataUrl;
-    $('#sessOcrPreview').onload = () => drawOcrOverlay();
-    $('#sessOcrResults').classList.remove('hidden');
-    $('#sessOcrClear').classList.remove('hidden');
-    $('#sessOcrTime').classList.add('hidden');
-    $('#sessOcrSelToolbar').classList.add('hidden');
-    setSmartScanStatus('Screenshot ready. Click Smart Scan to send it to OpenAI.');
-    renderOcrList();
-    drawOcrOverlay();
+    await loadOcrDataUrl(await fileToDataUrl(file));
   } catch (e) {
     console.error(e);
     alert('Screenshot load failed: ' + (e.message || e));
     clearOcr();
+  }
+}
+
+function resetOcrCaptureIdle() {
+  $('#sessOcrLoading').classList.add('hidden');
+  $('#sessOcrDrop').classList.remove('hidden');
+}
+
+async function waitForVideoFrame(video) {
+  if (!video.videoWidth || !video.videoHeight) {
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = () => reject(new Error('Could not read screen capture stream.'));
+    });
+  }
+  await video.play();
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function cropDataUrlFromImage(img, selection, displaySize) {
+  const sx = img.naturalWidth / displaySize.w;
+  const sy = img.naturalHeight / displaySize.h;
+  const crop = {
+    x: Math.max(0, Math.floor(selection.x * sx)),
+    y: Math.max(0, Math.floor(selection.y * sy)),
+    w: Math.max(1, Math.floor(selection.w * sx)),
+    h: Math.max(1, Math.floor(selection.h * sy)),
+  };
+  crop.w = Math.min(crop.w, img.naturalWidth - crop.x);
+  crop.h = Math.min(crop.h, img.naturalHeight - crop.y);
+
+  const cv = document.createElement('canvas');
+  cv.width = crop.w;
+  cv.height = crop.h;
+  cv.getContext('2d').drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, crop.w, crop.h);
+  return cv.toDataURL('image/png');
+}
+
+function openCaptureCropper(dataUrl) {
+  return new Promise(resolve => {
+    let done = false;
+    let dragging = false;
+    let start = null;
+    let selection = null;
+
+    const shell = document.createElement('div');
+    shell.className = 'fixed inset-0 z-[100] bg-black/85 p-4 flex items-center justify-center';
+    shell.innerHTML = `
+      <div class="w-full max-w-6xl h-full max-h-full flex flex-col gap-3">
+        <div class="shrink-0 flex flex-wrap items-center gap-2 bg-panel border border-border rounded-md px-3 py-2">
+          <div class="flex-1 min-w-[220px] text-sm text-mute">Drag the area to capture</div>
+          <button data-crop-use class="h-8 px-3 bg-accent hover:brightness-110 rounded-md text-xs font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed" disabled>Use crop</button>
+          <button data-crop-full class="h-8 px-3 bg-panel2 border border-border hover:text-white rounded-md text-xs text-mute">Use full image</button>
+          <button data-crop-cancel class="h-8 px-3 bg-panel2 border border-border hover:text-white rounded-md text-xs text-mute">Cancel</button>
+        </div>
+        <div class="flex-1 min-h-0 flex items-center justify-center overflow-hidden bg-bg border border-border rounded-md">
+          <div class="relative max-w-full max-h-full">
+            <img data-crop-img class="block max-w-full max-h-[calc(100vh-112px)] select-none" draggable="false" alt="">
+            <canvas data-crop-canvas class="absolute inset-0 cursor-crosshair"></canvas>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(shell);
+
+    const img = shell.querySelector('[data-crop-img]');
+    const canvas = shell.querySelector('[data-crop-canvas]');
+    const useBtn = shell.querySelector('[data-crop-use]');
+    const fullBtn = shell.querySelector('[data-crop-full]');
+    const cancelBtn = shell.querySelector('[data-crop-cancel]');
+
+    const finish = value => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('resize', syncCanvas);
+      document.removeEventListener('keydown', onKeyDown);
+      shell.remove();
+      resolve(value);
+    };
+
+    const syncCanvas = () => {
+      const w = Math.max(1, Math.round(img.clientWidth));
+      const h = Math.max(1, Math.round(img.clientHeight));
+      canvas.width = w;
+      canvas.height = h;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      draw();
+    };
+
+    const draw = () => {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!selection) return;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(selection.x, selection.y, selection.w, selection.h);
+      ctx.strokeStyle = '#60a5fa';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(selection.x, selection.y, selection.w, selection.h);
+      ctx.fillStyle = '#60a5fa';
+      ctx.fillRect(selection.x, Math.max(0, selection.y - 18), Math.min(96, selection.w), 18);
+      ctx.fillStyle = '#0b0b0d';
+      ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillText(`${Math.round(selection.w)} x ${Math.round(selection.h)}`, selection.x + 4, Math.max(12, selection.y - 5));
+    };
+
+    const pointer = e => {
+      const r = canvas.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(canvas.width, e.clientX - r.left)),
+        y: Math.max(0, Math.min(canvas.height, e.clientY - r.top)),
+      };
+    };
+
+    canvas.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      canvas.setPointerCapture(e.pointerId);
+      start = pointer(e);
+      selection = null;
+      useBtn.disabled = true;
+      dragging = true;
+      draw();
+    });
+
+    canvas.addEventListener('pointermove', e => {
+      if (!dragging || !start) return;
+      const p = pointer(e);
+      const x = Math.min(start.x, p.x);
+      const y = Math.min(start.y, p.y);
+      const w = Math.abs(p.x - start.x);
+      const h = Math.abs(p.y - start.y);
+      selection = { x, y, w, h };
+      useBtn.disabled = w < 8 || h < 8;
+      draw();
+    });
+
+    const endDrag = e => {
+      if (!dragging) return;
+      dragging = false;
+      try { canvas.releasePointerCapture(e.pointerId); } catch {}
+      if (!selection || selection.w < 8 || selection.h < 8) {
+        selection = null;
+        useBtn.disabled = true;
+      }
+      draw();
+    };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+
+    useBtn.addEventListener('click', () => {
+      if (!selection || selection.w < 8 || selection.h < 8) return;
+      finish(cropDataUrlFromImage(img, selection, { w: canvas.width, h: canvas.height }));
+    });
+    fullBtn.addEventListener('click', () => finish(dataUrl));
+    cancelBtn.addEventListener('click', () => finish(null));
+    const onKeyDown = e => { if (e.key === 'Escape') finish(null); };
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', syncCanvas);
+
+    img.onload = syncCanvas;
+    img.src = dataUrl;
+  });
+}
+
+async function captureOcrScreenshot() {
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    alert('Screen capture is not supported in this browser. Use drop, paste, or file upload instead.');
+    return;
+  }
+
+  let stream = null;
+  setOcrLoading('Choose a screen or window to capture...');
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { displaySurface: 'window' },
+      audio: false,
+    });
+    setOcrLoading('Capturing screenshot...');
+
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = stream;
+    await waitForVideoFrame(video);
+
+    if (!video.videoWidth || !video.videoHeight) {
+      throw new Error('The selected capture source returned an empty frame.');
+    }
+
+    const cv = document.createElement('canvas');
+    cv.width = video.videoWidth;
+    cv.height = video.videoHeight;
+    cv.getContext('2d').drawImage(video, 0, 0, cv.width, cv.height);
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+
+    const croppedDataUrl = await openCaptureCropper(cv.toDataURL('image/png'));
+    if (croppedDataUrl) {
+      setOcrLoading('Preparing screenshot...');
+      await loadOcrDataUrl(croppedDataUrl);
+    } else {
+      resetOcrCaptureIdle();
+    }
+  } catch (e) {
+    console.error(e);
+    resetOcrCaptureIdle();
+    if (e?.name !== 'NotAllowedError' && e?.name !== 'AbortError') {
+      alert('Screen capture failed: ' + (e.message || e));
+    }
+  } finally {
+    if (stream) stream.getTracks().forEach(track => track.stop());
   }
 }
 
@@ -2050,9 +2267,18 @@ function applyDetectedTime() {
 function bindOcrZone() {
   const zone = $('#sessOcrDrop');
   const fileInput = $('#sessOcrFile');
+  const captureBtn = $('#sessOcrCapture');
   if (!zone || !fileInput) return;
 
-  zone.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') fileInput.click(); });
+  zone.addEventListener('click', e => {
+    if (e.target.closest('button') || e.target.tagName === 'INPUT') return;
+    fileInput.click();
+  });
+  captureBtn?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    captureOcrScreenshot();
+  });
   fileInput.addEventListener('change', e => {
     const f = e.target.files?.[0];
     if (f) handleOcrFile(f);
